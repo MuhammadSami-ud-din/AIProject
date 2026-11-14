@@ -22,6 +22,18 @@ from backend.data.learning import (
 )
 from backend.data.match_runner import run_match
 
+# scikit-learn may be blocked by system policy on some machines
+try:
+    from sklearn.ensemble import RandomForestClassifier
+    SKLEARN_AVAILABLE = True
+except (ImportError, OSError):
+    SKLEARN_AVAILABLE = False
+
+needs_sklearn = pytest.mark.skipif(
+    not SKLEARN_AVAILABLE,
+    reason="scikit-learn is not loadable on this machine"
+)
+
 
 @pytest.fixture
 def populated_db():
@@ -70,6 +82,7 @@ def test_features_to_array():
     assert len(arr[0]) == len(FEATURE_NAMES)
 
 
+@needs_sklearn
 def test_train_model(populated_db):
     conn, _ = populated_db
     X, y, _ = extract_training_data(conn)
@@ -81,6 +94,7 @@ def test_train_model(populated_db):
     assert isinstance(pred, Action)
 
 
+@needs_sklearn
 def test_save_and_load_model(populated_db, tmp_path):
     conn, _ = populated_db
     X, y, _ = extract_training_data(conn)
@@ -102,6 +116,7 @@ def test_save_and_load_model(populated_db, tmp_path):
         learning_mod.MODELS_DIR = old_dir
 
 
+@needs_sklearn
 def test_training_thread(populated_db):
     conn, path = populated_db
 

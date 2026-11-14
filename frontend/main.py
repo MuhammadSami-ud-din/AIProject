@@ -103,7 +103,9 @@ def _start_match(surface, clock, settings):
 
 
 def _ai_fight(surface, clock):
-    """AI vs AI match flow."""
+    """AI vs AI match flow with full AI thinking display."""
+    from frontend.ai_viewer import run_ai_viewer
+
     # Pick two fighters
     name1 = character_select(surface, clock)
     if name1 is None:
@@ -119,7 +121,8 @@ def _ai_fight(surface, clock):
     agent1 = _make_agent(name1, player=1, difficulty=difficulty)
     agent2 = _make_agent(name2, player=2, difficulty=difficulty)
 
-    result = run_fight(surface, clock, agent1, agent2, human_player=None)
+    # Use the AI viewer instead of the normal fight screen
+    result = run_ai_viewer(surface, clock, agent1, agent2)
 
     if result != "quit":
         results_screen(surface, clock, result, agent1.name, agent2.name)
@@ -131,12 +134,16 @@ def _make_agent(name, player, difficulty="LOW", seed=None):
     from backend.ai.steel import SteelAgent
     from backend.ai.shadow import ShadowAgent
     from backend.ai.golden import GoldenAgent
+    from backend.ai.ghost import GhostAgent
 
     if seed is None:
         seed = random.randint(0, 999999)
 
     if name == "Random":
         return RandomAgent(player=player, seed=seed)
+
+    if name == "Ghost":
+        return GhostAgent(player=player, difficulty=difficulty, seed=seed)
 
     # Map fighter names to their AI classes
     agent_classes = {

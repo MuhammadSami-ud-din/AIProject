@@ -11,6 +11,7 @@ Key rules:
 import json
 import os
 import pickle
+import random
 import threading
 from datetime import datetime
 
@@ -89,6 +90,94 @@ def extract_training_data(conn, match_ids=None, winner_only=True):
     return X, y, ids_used
 
 
+def augment_training_data(X, y, seed=42):
+    """Add mirrored and jittered copies of training data.
+
+    Data augmentation gives the model more examples to learn from.
+    mirrored(): flips the arena left-to-right.
+    jittered(): adds tiny random noise to positions and health.
+    ONLY use this on the training set, never on validation or test.
+
+    Returns (augmented_X, augmented_y) — original + new copies.
+    """
+    from backend.ai.observation import Observation, example_observation
+
+    rng = random.Random(seed)
+    aug_X = list(X)
+    aug_y = list(y)
+
+    for features, action in zip(X, y):
+        # Build a temporary Observation to use mirrored() and jittered()
+        obs = _features_to_observation(features)
+        if obs is None:
+            continue
+
+        # Mirrored copy: flip the arena left-to-right
+        mirrored = obs.mirrored()
+        aug_X.append(mirrored.features())
+        aug_y.append(action)
+
+        # Jittered copy: small random changes to positions and health
+        jittered = obs.jittered(rng)
+        aug_X.append(jittered.features())
+        aug_y.append(action)
+
+    return aug_X, aug_y
+
+
+def _features_to_observation(features):
+    """Convert a features dict back to an Observation for augmentation.
+
+    This is a best-effort conversion. Some information is lost
+    because features() normalises values, so we approximate.
+    """
+    from backend.ai.actions import Action
+    from backend.ai.observation import Observation, FRAMES_PER_SECOND
+    from backend.ai.zones import ARENA_WIDTH
+
+    try:
+        # Reverse the normalisation done by features()
+        distance_ratio = features["distance"]
+        my_health = features["my_health"]
+        enemy_health = features["enemy_health"]
+        time_ratio = features["time_left"]
+
+        # Approximate positions: place my fighter at 200, enemy based on distance
+        distance_px = distance_ratio * ARENA_WIDTH
+        my_x = max(0, min(200, ARENA_WIDTH - distance_px))
+        enemy_x = min(ARENA_WIDTH, my_x + distance_px)
+
+        # Approximate cooldown/recovery: de-normalise from 0-1 to frames
+        my_cooldown = int(features["my_cooldown"] * FRAMES_PER_SECOND)
+        enemy_cooldown = int(features["enemy_cooldown"] * FRAMES_PER_SECOND)
+        my_recovery = int(features["my_recovery"] * FRAMES_PER_SECOND)
+        enemy_recovery = int(features["enemy_recovery"] * FRAMES_PER_SECOND)
+
+        # Last actions: convert from int value back to Action
+        my_last = Action(int(features["my_last_action"]))
+        enemy_last = Action(int(features["enemy_last_action"]))
+
+        return Observation(
+            my_x=my_x,
+            enemy_x=enemy_x,
+            my_health=max(0.0, min(1.0, my_health)),
+            enemy_health=max(0.0, min(1.0, enemy_health)),
+            my_reach=70,
+            enemy_reach=70,
+            time_left=max(0.0, min(60.0, time_ratio * 60)),
+            my_cooldown=my_cooldown,
+            enemy_cooldown=enemy_cooldown,
+            my_recovery=my_recovery,
+            enemy_recovery=enemy_recovery,
+            my_in_air=bool(features["my_in_air"] > 0.5),
+            enemy_in_air=bool(features["enemy_in_air"] > 0.5),
+            my_last_action=my_last,
+            enemy_last_action=enemy_last,
+        )
+    except (ValueError, KeyError):
+        return None
+
+
 def split_by_match(match_ids, train_ratio=0.7, val_ratio=0.15):
     """Split match IDs into train/validation/test sets.
 
@@ -156,7 +245,11 @@ def predict_action(model, features_dict):
 
 
 def save_model(model, version_name=None):
-    """Save a trained model to disk with versioning."""
+    """Save a trained model to disk with versioning.
+
+    Keeps a history of all model versions in model_info.json.
+    Also saves as 'latest' for quick loading.
+    """
     _ensure_models_dir()
 
     if version_name is None:
@@ -171,17 +264,65 @@ def save_model(model, version_name=None):
     with open(latest_path, "wb") as f:
         pickle.dump(model, f)
 
-    # Save version info
-    info = {
+    # Update version history
+    info_path = os.path.join(MODELS_DIR, "model_info.json")
+    history = _load_version_history()
+    history["current"] = version_name
+    history["versions"].append({
         "version": version_name,
         "timestamp": datetime.now().isoformat(),
         "path": path,
-    }
-    info_path = os.path.join(MODELS_DIR, "model_info.json")
+    })
     with open(info_path, "w") as f:
-        json.dump(info, f, indent=2)
+        json.dump(history, f, indent=2)
 
     return path
+
+
+def _load_version_history():
+    """Load the model version history, or create an empty one."""
+    info_path = os.path.join(MODELS_DIR, "model_info.json")
+    if os.path.exists(info_path):
+        with open(info_path, "r") as f:
+            data = json.load(f)
+        # Make sure it has the right shape
+        if "versions" not in data:
+            data["versions"] = []
+        return data
+    return {"current": None, "versions": []}
+
+
+def rollback_model(version_name):
+    """Roll back to a previous model version.
+
+    Copies that version's .pkl file over model_latest.pkl.
+    Returns True if successful, False if the version was not found.
+    """
+    _ensure_models_dir()
+    path = os.path.join(MODELS_DIR, f"model_{version_name}.pkl")
+    if not os.path.exists(path):
+        return False
+
+    latest_path = os.path.join(MODELS_DIR, "model_latest.pkl")
+    with open(path, "rb") as src:
+        data = src.read()
+    with open(latest_path, "wb") as dst:
+        dst.write(data)
+
+    # Update the current pointer in model_info.json
+    history = _load_version_history()
+    history["current"] = version_name
+    info_path = os.path.join(MODELS_DIR, "model_info.json")
+    with open(info_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+    return True
+
+
+def list_model_versions():
+    """Return the list of all saved model versions."""
+    history = _load_version_history()
+    return history.get("versions", [])
 
 
 def load_model():
@@ -250,10 +391,13 @@ class TrainingThread(threading.Thread):
                 self.done = True
                 return
 
+            # Data augmentation on training set ONLY
+            X_train, y_train = augment_training_data(X_train, y_train)
+
             # Train
             self.model = train_model(X_train, y_train)
 
-            # Save (validation with match play would go here in full version)
+            # Save with versioning (validation with match play would go here)
             save_model(self.model)
             self.success = True
 

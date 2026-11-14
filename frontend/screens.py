@@ -331,13 +331,27 @@ def results_screen(surface, clock, match_result, p1_name, p2_name):
 
 
 def settings_screen(surface, clock, settings):
-    """Simple settings screen. Returns updated settings dict.
+    """Settings screen with multiple options.
 
-    settings: {"log_fights": bool}
+    settings: {"log_fights": bool, "speed": float, "show_ai": bool}
+    Returns updated settings dict.
     """
     font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
     font_medium = pygame.font.Font(None, FONT_SIZE_MEDIUM)
     font_small = pygame.font.Font(None, FONT_SIZE_SMALL)
+
+    # Ensure all settings exist with defaults
+    settings.setdefault("log_fights", False)
+    settings.setdefault("speed", 1.0)
+    settings.setdefault("show_ai", True)
+
+    items = ["log_fights", "speed", "show_ai"]
+    labels = {
+        "log_fights": "Log Human Fights",
+        "speed": "Game Speed",
+        "show_ai": "Show AI Thinking",
+    }
+    selected = 0
 
     while True:
         for event in pygame.event.get():
@@ -346,36 +360,152 @@ def settings_screen(surface, clock, settings):
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     return settings
-                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    settings["log_fights"] = not settings["log_fights"]
+                if event.key == pygame.K_UP:
+                    selected = (selected - 1) % len(items)
+                elif event.key == pygame.K_DOWN:
+                    selected = (selected + 1) % len(items)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    key = items[selected]
+                    if key == "log_fights":
+                        settings["log_fights"] = not settings["log_fights"]
+                    elif key == "show_ai":
+                        settings["show_ai"] = not settings["show_ai"]
+                elif event.key == pygame.K_LEFT:
+                    key = items[selected]
+                    if key == "speed":
+                        settings["speed"] = max(0.25, settings["speed"] - 0.25)
+                elif event.key == pygame.K_RIGHT:
+                    key = items[selected]
+                    if key == "speed":
+                        settings["speed"] = min(4.0, settings["speed"] + 0.25)
 
         surface.fill(MENU_BG)
         _draw_title(surface, "Settings", font_large, y=60)
 
-        status = "ON" if settings["log_fights"] else "OFF"
-        label = font_medium.render(f"Log Human Fights: {status}", True, WHITE)
-        surface.blit(label, label.get_rect(midtop=(SCREEN_WIDTH // 2, 200)))
+        for i, key in enumerate(items):
+            # Build the value display
+            if key == "log_fights":
+                val = "ON" if settings["log_fights"] else "OFF"
+            elif key == "speed":
+                val = f"{settings['speed']:.2f}x (←/→)"
+            elif key == "show_ai":
+                val = "ON" if settings["show_ai"] else "OFF"
+            else:
+                val = str(settings.get(key, "?"))
 
-        hint = font_small.render("Enter to toggle, Esc to go back", True, LIGHT_GREY)
-        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 300)))
+            text = f"{labels[key]}: {val}"
+            colour = WHITE if i == selected else LIGHT_GREY
+            bg = MENU_HIGHLIGHT if i == selected else None
+
+            rendered = font_medium.render(text, True, colour)
+            rect = rendered.get_rect(midtop=(SCREEN_WIDTH // 2, 180 + i * 55))
+
+            if bg:
+                bg_rect = rect.inflate(40, 10)
+                pygame.draw.rect(surface, bg, bg_rect, border_radius=5)
+
+            surface.blit(rendered, rect)
+
+        hint = font_small.render(
+            "Enter/Space to toggle, ←/→ for speed, Esc to go back",
+            True, LIGHT_GREY
+        )
+        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 420)))
 
         pygame.display.flip()
         clock.tick(30)
 
 
 def statistics_screen(surface, clock):
-    """Placeholder statistics screen."""
+    """Show fighter statistics: Elo ratings and win rates.
+
+    Runs a quick round-robin tournament in the background and
+    displays the results. Press Esc to go back.
+    """
     font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
+    font_medium = pygame.font.Font(None, FONT_SIZE_MEDIUM)
     font_small = pygame.font.Font(None, FONT_SIZE_SMALL)
 
+    # Show "calculating..." while running the tournament
     surface.fill(MENU_BG)
     _draw_title(surface, "Statistics", font_large, y=60)
-
-    msg = font_small.render("Statistics will be available after M9.", True, LIGHT_GREY)
-    surface.blit(msg, msg.get_rect(midtop=(SCREEN_WIDTH // 2, 250)))
-
-    prompt = font_small.render("Press any key to go back", True, WHITE)
-    surface.blit(prompt, prompt.get_rect(midtop=(SCREEN_WIDTH // 2, 400)))
-
+    loading = font_small.render("Running tournament... please wait", True, LIGHT_GREY)
+    surface.blit(loading, loading.get_rect(midtop=(SCREEN_WIDTH // 2, 250)))
     pygame.display.flip()
-    _wait_for_key_or_click()
+
+    # Run a quick round-robin (5 matches per pair)
+    from backend.data.statistics import (
+        run_round_robin, compute_elo, win_rate_with_ci, FIGHTER_NAMES
+    )
+    results = run_round_robin(matches_per_pair=5)
+    elo = compute_elo(results)
+
+    # Sort fighters by Elo
+    sorted_fighters = sorted(elo.keys(), key=lambda f: elo[f], reverse=True)
+
+    # Build the display
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return
+
+        surface.fill(MENU_BG)
+        _draw_title(surface, "Statistics & Leaderboard", font_large, y=30)
+
+        # Elo leaderboard
+        elo_label = font_medium.render("Elo Ratings", True, WHITE)
+        surface.blit(elo_label, elo_label.get_rect(midtop=(SCREEN_WIDTH // 4, 90)))
+
+        for i, name in enumerate(sorted_fighters):
+            rating = elo[name]
+            rank_text = f"#{i+1}  {name}: {rating:.0f}"
+            colour = FIGHTER_COLOURS.get(name, (WHITE, WHITE))[0]
+            label = font_small.render(rank_text, True, colour)
+            surface.blit(label, (SCREEN_WIDTH // 4 - 80, 130 + i * 35))
+
+        # Win rate table
+        wr_label = font_medium.render("Win Rates", True, WHITE)
+        surface.blit(wr_label, wr_label.get_rect(midtop=(3 * SCREEN_WIDTH // 4, 90)))
+
+        # Table header
+        header_x = SCREEN_WIDTH // 2 + 30
+        for j, name in enumerate(FIGHTER_NAMES):
+            h = font_small.render(name[:3], True, LIGHT_GREY)
+            surface.blit(h, (header_x + 70 + j * 60, 130))
+
+        # Table rows
+        for i, name1 in enumerate(FIGHTER_NAMES):
+            row_label = font_small.render(name1[:3], True, WHITE)
+            surface.blit(row_label, (header_x, 160 + i * 30))
+
+            for j, name2 in enumerate(FIGHTER_NAMES):
+                if name1 == name2:
+                    cell = "-"
+                else:
+                    # Find the result between these two
+                    rate = _find_win_rate(results, name1, name2)
+                    cell = f"{rate:.0%}"
+                c = font_small.render(cell, True, LIGHT_GREY)
+                surface.blit(c, (header_x + 70 + j * 60, 160 + i * 30))
+
+        # Instructions
+        hint = font_small.render("Press Esc to go back", True, LIGHT_GREY)
+        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 550)))
+
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _find_win_rate(results, name1, name2):
+    """Find win rate of name1 against name2 from round-robin results."""
+    for r in results:
+        if r["fighter1"] == name1 and r["fighter2"] == name2:
+            total = r["wins1"] + r["wins2"] + r["draws"]
+            return r["wins1"] / total if total > 0 else 0.5
+        elif r["fighter1"] == name2 and r["fighter2"] == name1:
+            total = r["wins1"] + r["wins2"] + r["draws"]
+            return r["wins2"] / total if total > 0 else 0.5
+    return 0.5

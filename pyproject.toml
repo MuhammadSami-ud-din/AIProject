@@ -3,6 +3,7 @@ name = "aiproject"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "matplotlib>=3.11.2",
     "pygame-ce>=2.5.8",
     "pytest>=9.2.0",
     "scikit-learn>=1.9.1",

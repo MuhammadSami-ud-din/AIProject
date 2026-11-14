@@ -4,11 +4,12 @@ Wraps any fighter agent to make it easier or harder:
   - Reaction delay: sees an observation from N frames ago.
   - Mistake chance: sometimes picks 2nd or 3rd best move.
   - Search depth: how many plies of minimax to use.
+  - Learned policy: HIGH+ can use a trained model to boost scores.
 """
 
 from collections import deque
 
-from backend.ai.actions import Action
+from backend.ai.actions import Action, ALL_ACTIONS
 from backend.ai.base_agent import Agent, DIFFICULTIES
 from backend.ai.choice import pick
 
@@ -30,6 +31,7 @@ class DifficultyWrapper(Agent):
       1. Reaction delay: the agent sees an old observation.
       2. Mistake chance: sometimes picks a worse move.
       3. Passes difficulty settings through for search/opponent model.
+      4. Learned policy: can blend in a trained model's suggestions.
     """
 
     def __init__(self, inner_agent, difficulty="LOW"):
@@ -63,6 +65,19 @@ class DifficultyWrapper(Agent):
         self.use_opponent_model = True
         self.use_learned_policy = True
 
+        # Try to load a trained model for learned-policy blending
+        self._learned_model = None
+        if self.use_learned_policy:
+            self._try_load_learned_model()
+
+    def _try_load_learned_model(self):
+        """Try to load the latest trained model for blending."""
+        try:
+            from backend.data.learning import load_model
+            self._learned_model = load_model()
+        except Exception:
+            self._learned_model = None
+
     def reset(self):
         """Reset for a new round."""
         super().reset()
@@ -91,6 +106,10 @@ class DifficultyWrapper(Agent):
         if not scores:
             return Action.IDLE, {Action.IDLE: 1.0}
 
+        # Blend in learned model suggestions (HIGH+ only)
+        if self.use_learned_policy and self._learned_model is not None:
+            scores = self._blend_learned_scores(scores, delayed_obs)
+
         # Apply mistake chance using pick()
         chosen = pick(
             scores,
@@ -100,3 +119,27 @@ class DifficultyWrapper(Agent):
         )
 
         return chosen, scores
+
+    def _blend_learned_scores(self, scores, obs):
+        """Blend the inner agent's scores with the learned model's prediction.
+
+        The learned model gets a weight of 0.3 — it nudges the decision
+        toward what historically winning fighters did, without overriding
+        the fighter's own logic.
+        """
+        try:
+            from backend.data.learning import predict_action
+            predicted = predict_action(self._learned_model, obs.features())
+
+            # Boost the predicted action's score by 30%
+            BLEND_WEIGHT = 0.3
+            blended = dict(scores)
+            if predicted in blended:
+                max_score = max(blended.values())
+                bonus = max_score * BLEND_WEIGHT
+                blended[predicted] += bonus
+
+            return blended
+        except Exception:
+            # If anything goes wrong, just use original scores
+            return scores
