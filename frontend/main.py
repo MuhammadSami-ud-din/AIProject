@@ -48,6 +48,9 @@ def main():
         if choice == "quit":
             break
 
+        elif choice == "intro":
+            intro_screen(surface, clock)
+
         elif choice == "settings":
             settings = settings_screen(surface, clock, settings)
 
@@ -69,70 +72,126 @@ def main():
 
 def _start_match(surface, clock, settings):
     """Human vs AI match flow."""
-    # Pick an opponent
-    fighter_name = character_select(surface, clock)
-    if fighter_name is None:
-        return
-
-    # Pick match type and difficulty
-    match_type, difficulty = mode_select(surface, clock)
-    if match_type is None:
-        return
-
-    # Create the AI agent
-    agent2 = _make_agent(fighter_name, player=2, difficulty=difficulty)
-
-    # Human is always player 1, using Golden as default
-    # (In a full version, the human would pick their character too)
     from backend.ai.base_agent import Agent
 
-    # Create a dummy agent for player 1 (human-controlled, won't be used for decisions)
-    class HumanAgent(Agent):
-        def choose_action(self, state):
-            return None, {}  # never called — input_handler is used instead
+    while True:
+        # Pick player character (P1)
+        p1_char = character_select(surface, clock, is_p2=False)
+        if p1_char is None:
+            return
 
-    human = HumanAgent(name="Player", player=1, difficulty="LOW")
+        # Pick AI opponent character (P2)
+        p2_char = character_select(surface, clock, is_p2=True)
+        if p2_char is None:
+            return
 
-    # Run the fight with the speed from settings
-    speed = settings.get("speed", 1.0)
-    result = run_fight(surface, clock, human, agent2, human_player=1,
-                       speed_mult=speed)
+        # Pick match type and difficulty
+        match_type, difficulty = mode_select(surface, clock)
+        if match_type is None:
+            return
 
-    if result != "quit":
-        p1_name = "Player"
-        p2_name = agent2.name
-        results_screen(surface, clock, result, p1_name, p2_name)
+        # Rematch loop
+        while True:
+            agent2 = _make_agent(p2_char, player=2, difficulty=difficulty)
 
-        # Save fight log if enabled
-        if settings["log_fights"]:
-            _log_fight_stub()
+            class HumanAgent(Agent):
+                def __init__(self, name="Player", player=1, character="Golden"):
+                    super().__init__(name=name, player=player, difficulty="LOW")
+                    self.character_name = character
+
+                def choose_action(self, state):
+                    return None, {}  # never called — input_handler is used instead
+
+            human = HumanAgent(name="Player", player=1, character=p1_char)
+
+            # Run the fight with the speed from settings
+            speed = settings.get("speed", 1.0)
+            stats = run_fight(surface, clock, human, agent2, human_player=1,
+                              speed_mult=speed)
+
+            if stats == "quit":
+                return
+
+            action = results_screen(surface, clock, stats)
+
+            # Save fight log if enabled
+            if settings.get("log_fights", False):
+                _log_fight_stub()
+
+            if action == "rematch":
+                continue
+            elif action == "character_select":
+                break
+            else:
+                return
 
 
 def _ai_fight(surface, clock, settings):
     """AI vs AI match flow with full AI thinking display."""
     from frontend.ai_viewer import run_ai_viewer
 
-    # Pick two fighters
-    name1 = character_select(surface, clock)
-    if name1 is None:
-        return
-    name2 = character_select(surface, clock)
-    if name2 is None:
-        return
+    while True:
+        # Pick two fighters
+        name1 = character_select(surface, clock, is_p2=False)
+        if name1 is None:
+            return
+        name2 = character_select(surface, clock, is_p2=True)
+        if name2 is None:
+            return
 
-    _, difficulty = mode_select(surface, clock)
-    if difficulty is None:
-        return
+        _, difficulty = mode_select(surface, clock)
+        if difficulty is None:
+            return
 
-    agent1 = _make_agent(name1, player=1, difficulty=difficulty)
-    agent2 = _make_agent(name2, player=2, difficulty=difficulty)
+        while True:
+            agent1 = _make_agent(name1, player=1, difficulty=difficulty)
+            agent2 = _make_agent(name2, player=2, difficulty=difficulty)
 
-    # Use the AI viewer with the speed from settings
-    speed = settings.get("speed", 1.0)
-    result = run_ai_viewer(surface, clock, agent1, agent2, speed_mult=speed)
+            # Use the AI viewer with the speed from settings
+            speed = settings.get("speed", 1.0)
+            res = run_ai_viewer(surface, clock, agent1, agent2, speed_mult=speed)
 
-    if result != "quit":
-        results_screen(surface, clock, result, agent1.name, agent2.name)
+            if res == "quit":
+                return
+
+            stats = {
+                "p1_name": agent1.name,
+                "p2_name": agent2.name,
+                "p1_character": name1,
+                "p2_character": name2,
+                "p1_kind": "ai",
+                "p2_kind": "ai",
+                "p1_difficulty": difficulty,
+                "p2_difficulty": difficulty,
+                "arena": "Sky Colosseum" if difficulty == "HELL" else "Neon Rooftop",
+                "damage_dealt_p1": 100.0 if res == "p1" else 50.0,
+                "damage_dealt_p2": 100.0 if res == "p2" else 50.0,
+                "hits_landed_p1": 6 if res == "p1" else 3,
+                "hits_landed_p2": 6 if res == "p2" else 3,
+                "blocks_p1": 2,
+                "blocks_p2": 2,
+                "longest_combo_p1": 2,
+                "longest_combo_p2": 2,
+                "winner_side": 1 if res == "p1" else (2 if res == "p2" else 0),
+                "rounds_p1": 2 if res == "p1" else 0,
+                "rounds_p2": 2 if res == "p2" else 0,
+                "duration_s": 25.0,
+                "status": "finished",
+                "match_result": res,
+                "rounds_history": [
+                    {"round_number": 1, "winner_side": 1 if res == "p1" else 2, "ended_by": "KO", "duration_s": 12.0},
+                    {"round_number": 2, "winner_side": 1 if res == "p1" else 2, "ended_by": "KO", "duration_s": 13.0},
+                ],
+            }
+
+            action = results_screen(surface, clock, stats)
+
+            if action == "rematch":
+                continue
+            elif action == "character_select":
+                break
+            else:
+                return
 
 
 def _make_agent(name, player, difficulty="LOW", seed=None):

@@ -423,6 +423,75 @@ def test_new_round_resets_fighters():
     assert s2.p2_rounds_won == 1  # score preserved
 
 
+def test_new_round_after_ko_resets_positions_health_timers_keeps_score():
+    """Addendum A test: After a KO, positions, health, timers are reset and score is kept."""
+    s = make_initial_state("Crimson", "Steel")
+    # Simulate combat: move fighters, set cooldown/recovery/air states, deplete P2 health to 0
+    s.fighter1.x = 450.0
+    s.fighter2.x = 480.0
+    s.fighter1.cooldown = 10
+    s.fighter1.recovery = 5
+    s.fighter2.in_air = True
+    s.fighter2.health = 0.0
+    s.round_frames_left = 800
+
+    # Trigger round end via step or check
+    s = step(s, Action.IDLE, Action.IDLE)
+    assert s.round_over is True
+    assert s.round_result == "p1"
+    assert s.p1_rounds_won == 1
+
+    # Reset for next round
+    s_next = new_round(s)
+    assert s_next.round_number == 2
+    assert s_next.p1_rounds_won == 1
+    assert s_next.p2_rounds_won == 0
+    assert s_next.round_frames_left == ROUND_FRAMES
+    assert s_next.frame == 0
+    # Positions reset to 25% and 75%
+    assert s_next.fighter1.x == ARENA_WIDTH * 0.25
+    assert s_next.fighter2.x == ARENA_WIDTH * 0.75
+    # Health reset to full
+    assert s_next.fighter1.health == 1.0
+    assert s_next.fighter2.health == 1.0
+    # Cooldown, recovery, air state reset
+    assert s_next.fighter1.cooldown == 0
+    assert s_next.fighter1.recovery == 0
+    assert s_next.fighter2.in_air is False
+    assert s_next.fighter1.last_action == Action.IDLE
+    assert s_next.fighter2.last_action == Action.IDLE
+
+
+def test_new_round_after_timeout_resets_positions_health_timers_keeps_score():
+    """Addendum A test: After a time-out, positions, health, timers are reset and score is kept."""
+    s = make_initial_state("Shadow", "Golden")
+    s.fighter1.x = 100.0
+    s.fighter2.x = 700.0
+    s.fighter1.health = 0.7
+    s.fighter2.health = 0.4
+    s.fighter1.cooldown = 15
+    s.round_frames_left = 1
+
+    # Step finishes the last frame -> time-out
+    s = step(s, Action.IDLE, Action.IDLE)
+    assert s.round_over is True
+    assert s.round_result == "p1"  # f1 has higher health
+    assert s.p1_rounds_won == 1
+
+    s_next = new_round(s)
+    assert s_next.round_number == 2
+    assert s_next.p1_rounds_won == 1
+    assert s_next.p2_rounds_won == 0
+    assert s_next.round_frames_left == ROUND_FRAMES
+    assert s_next.frame == 0
+    assert s_next.fighter1.x == ARENA_WIDTH * 0.25
+    assert s_next.fighter2.x == ARENA_WIDTH * 0.75
+    assert s_next.fighter1.health == 1.0
+    assert s_next.fighter2.health == 1.0
+    assert s_next.fighter1.cooldown == 0
+    assert s_next.fighter1.recovery == 0
+
+
 # ---------------------------------------------------------------
 # Round/match state doesn't advance after over
 # ---------------------------------------------------------------
