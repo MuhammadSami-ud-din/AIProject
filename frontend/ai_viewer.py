@@ -49,10 +49,12 @@ SPEED_OPTIONS = [
 DEFAULT_SPEED_INDEX = 2  # start at 1x
 
 
-def run_ai_viewer(surface, clock, agent1, agent2):
+def run_ai_viewer(surface, clock, agent1, agent2, speed_mult=1.0):
     """Run an AI-vs-AI match with full thinking display.
 
     agent1, agent2: the two AI agents.
+    speed_mult: initial speed from Settings (0.5, 1.0, 2.0, 3.0).
+                Can still be changed with ←/→ during the fight.
     Returns the match result: "p1", "p2", or "draw".
     """
     # Figure out character names from the agents
@@ -70,7 +72,12 @@ def run_ai_viewer(surface, clock, agent1, agent2):
     font_tiny = pygame.font.Font(None, 16)
 
     # State for the viewer
+    # Find the speed index matching the settings speed_mult, or default to 1x
     speed_index = DEFAULT_SPEED_INDEX
+    for i, (_, mult) in enumerate(SPEED_OPTIONS):
+        if abs(mult - speed_mult) < 0.01:
+            speed_index = i
+            break
     show_profiling = False       # toggled with F3
     paused = False
 

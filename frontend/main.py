@@ -17,6 +17,7 @@ from frontend.screens import (
     character_select,
     intro_screen,
     main_menu,
+    manual_screen,
     mode_select,
     results_screen,
     settings_screen,
@@ -34,8 +35,8 @@ def main():
     pygame.display.set_caption("Arena-AI")
     clock = pygame.time.Clock()
 
-    # Game settings (saved across menus)
-    settings = {"log_fights": False}
+    # Game settings (saved across menus, persist between matches)
+    settings = {"log_fights": False, "speed": 1.0, "show_ai": True}
 
     # Show the intro screen once
     intro_screen(surface, clock)
@@ -53,11 +54,14 @@ def main():
         elif choice == "statistics":
             statistics_screen(surface, clock)
 
+        elif choice == "manual":
+            manual_screen(surface, clock)
+
         elif choice == "start":
             _start_match(surface, clock, settings)
 
         elif choice == "ai_fight":
-            _ai_fight(surface, clock)
+            _ai_fight(surface, clock, settings)
 
     pygame.quit()
     sys.exit()
@@ -89,8 +93,10 @@ def _start_match(surface, clock, settings):
 
     human = HumanAgent(name="Player", player=1, difficulty="LOW")
 
-    # Run the fight
-    result = run_fight(surface, clock, human, agent2, human_player=1)
+    # Run the fight with the speed from settings
+    speed = settings.get("speed", 1.0)
+    result = run_fight(surface, clock, human, agent2, human_player=1,
+                       speed_mult=speed)
 
     if result != "quit":
         p1_name = "Player"
@@ -102,7 +108,7 @@ def _start_match(surface, clock, settings):
             _log_fight_stub()
 
 
-def _ai_fight(surface, clock):
+def _ai_fight(surface, clock, settings):
     """AI vs AI match flow with full AI thinking display."""
     from frontend.ai_viewer import run_ai_viewer
 
@@ -121,8 +127,9 @@ def _ai_fight(surface, clock):
     agent1 = _make_agent(name1, player=1, difficulty=difficulty)
     agent2 = _make_agent(name2, player=2, difficulty=difficulty)
 
-    # Use the AI viewer instead of the normal fight screen
-    result = run_ai_viewer(surface, clock, agent1, agent2)
+    # Use the AI viewer with the speed from settings
+    speed = settings.get("speed", 1.0)
+    result = run_ai_viewer(surface, clock, agent1, agent2, speed_mult=speed)
 
     if result != "quit":
         results_screen(surface, clock, result, agent1.name, agent2.name)

@@ -28,11 +28,13 @@ ARENA_OFFSET_X = (SCREEN_WIDTH - ARENA_WIDTH) // 2
 GROUND_Y = 450
 
 
-def run_fight(surface, clock, agent1, agent2, human_player=None):
+def run_fight(surface, clock, agent1, agent2, human_player=None,
+              speed_mult=1.0):
     """Run a full match on screen.
 
     agent1, agent2: the two fighters (Agent objects).
     human_player: 1 or 2 if a human is playing, None for AI vs AI.
+    speed_mult: game speed multiplier from Settings (0.5, 1.0, 2.0, 3.0).
 
     Returns the match result: "p1", "p2", or "draw".
     """
@@ -99,7 +101,7 @@ def run_fight(surface, clock, agent1, agent2, human_player=None):
         # --- Draw ---
         _draw_frame(surface, state, font_medium, font_small, hit_flash)
         pygame.display.flip()
-        clock.tick(FPS)
+        clock.tick(int(FPS * speed_mult))
 
         # --- Round transition ---
         if state.round_over and not state.match_over:
