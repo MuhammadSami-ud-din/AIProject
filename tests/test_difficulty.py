@@ -165,8 +165,8 @@ def test_search_prefers_winning_state():
     state.fighter2.x = 150  # within attack range
 
     action, score, _ = search_best_action(state, 1, CRIMSON, max_depth=2)
-    # Should prefer an aggressive action (FORWARD or LIGHT or HEAVY)
-    assert action in (Action.LIGHT, Action.HEAVY, Action.FORWARD)
+    # Should prefer an aggressive action (FORWARD, LIGHT, HEAVY, or special attack)
+    assert action in (Action.LIGHT, Action.HEAVY, Action.FORWARD, Action.SPECIAL_NEUTRAL)
 
 
 def test_search_within_time_budget():

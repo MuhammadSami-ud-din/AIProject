@@ -114,8 +114,8 @@ def _minimax(state, player, personality, depth, alpha, beta,
     obs = observation_for(state, player if maximizing else _other(player))
     available = _available_actions(obs)
 
-    # Limit branching: only consider top 3 actions to stay fast
-    available = available[:3]
+    # Limit branching: consider top actions to stay fast
+    available = available[:4]
 
     if maximizing:
         value = float("-inf")
@@ -172,15 +172,39 @@ def _evaluate_state(state, player, personality):
 
 
 def _available_actions(obs):
-    """Return a list of actions the fighter can do right now."""
+    """Return a list of actions the fighter can do right now, ordered by tactical relevance."""
+    from backend.ai.actions import ATTACKS, DEFENCE
+
+    preferred_order = [
+        Action.LIGHT,
+        Action.HEAVY,
+        Action.FORWARD,
+        Action.BLOCK,
+        Action.DASH,
+        Action.SPECIAL_NEUTRAL,
+        Action.SUPER,
+        Action.BACK,
+        Action.IDLE,
+        Action.JUMP,
+        Action.CROUCH,
+    ]
+    ordered = [a for a in preferred_order if a in ALL_ACTIONS]
+    for a in ALL_ACTIONS:
+        if a not in ordered:
+            ordered.append(a)
+
     available = []
-    for action in ALL_ACTIONS:
+    for action in ordered:
         # Skip attacks if on cooldown or in recovery
-        if action in (Action.LIGHT, Action.HEAVY):
+        if action in ATTACKS:
             if not obs.can_attack:
                 continue
+            if action in (Action.JUMP_PUNCH, Action.JUMP_KICK) and not obs.my_in_air:
+                continue
+            if action not in (Action.JUMP_PUNCH, Action.JUMP_KICK) and obs.my_in_air:
+                continue
         # Skip block if in the air
-        if action == Action.BLOCK and obs.my_in_air:
+        if action in DEFENCE and obs.my_in_air:
             continue
         available.append(action)
 

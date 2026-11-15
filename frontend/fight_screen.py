@@ -109,6 +109,9 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
         screen_shake = 0
         hit_stop = 0
         sparks = []
+        popups = []
+        training_mode = False
+        dummy_mode = 0  # 0: Stand, 1: Crouch, 2: Block All, 3: Random
         round_start_time = time.time()
 
         # Show round 1 intro
@@ -121,14 +124,18 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     return "quit"
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    pause_result = pause_screen(surface, clock)
-                    if pause_result == "quit":
-                        return "quit"
-                    elif pause_result == "restart":
-                        # Break inner loop to restart match
-                        state.match_over = True
-                        break
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        pause_result = pause_screen(surface, clock)
+                        if pause_result == "quit":
+                            return "quit"
+                        elif pause_result == "restart":
+                            state.match_over = True
+                            break
+                    elif event.key == pygame.K_F1:
+                        training_mode = not training_mode
+                    elif event.key == pygame.K_F2:
+                        dummy_mode = (dummy_mode + 1) % 4
 
             if state.match_over and pause_result == "restart":
                 break  # Restart outer while loop
@@ -141,20 +148,36 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                                   char1, char2, is_mirror, human_player,
                                   hit_flash, screen_shake, trail1, trail2,
                                   combo1, combo2, getattr(agent1, "difficulty", None),
-                                  getattr(agent2, "difficulty", None), sparks)
+                                  getattr(agent2, "difficulty", None), sparks,
+                                  popups, training_mode, dummy_mode)
+                pygame.display.flip()
+                clock.tick(int(FPS * speed_mult))
+                continue
                 pygame.display.flip()
                 clock.tick(int(FPS * speed_mult))
                 continue
 
             # --- 3. Get Fighter Actions ---
             if human_player == 1:
-                action1 = get_human_action(state.fighter2.x, state.fighter1.x)
+                can_act1 = (
+                    state.fighter1.recovery == 0
+                    and state.fighter1.hitstun == 0
+                    and state.fighter1.blockstun == 0
+                    and not state.fighter1.is_knocked_down
+                )
+                action1 = get_human_action(state.fighter2.x, state.fighter1.x, in_air=state.fighter1.in_air, can_act=can_act1)
                 obs2 = observation_for(state, 2)
                 action2, _ = agent2.decide(obs2)
             elif human_player == 2:
                 obs1 = observation_for(state, 1)
                 action1, _ = agent1.decide(obs1)
-                action2 = get_human_action(state.fighter1.x, state.fighter2.x)
+                can_act2 = (
+                    state.fighter2.recovery == 0
+                    and state.fighter2.hitstun == 0
+                    and state.fighter2.blockstun == 0
+                    and not state.fighter2.is_knocked_down
+                )
+                action2 = get_human_action(state.fighter1.x, state.fighter2.x, in_air=state.fighter2.in_air, can_act=can_act2)
             else:
                 obs1 = observation_for(state, 1)
                 obs2 = observation_for(state, 2)
@@ -162,9 +185,9 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                 action2, _ = agent2.decide(obs2)
 
             # Record block actions for stats
-            if action1 == Action.BLOCK:
+            if action1 in (Action.BLOCK, Action.BLOCK_LOW):
                 stats["blocks_p1"] += 1
-            if action2 == Action.BLOCK:
+            if action2 in (Action.BLOCK, Action.BLOCK_LOW):
                 stats["blocks_p2"] += 1
 
             # --- 4. Engine Step ---
@@ -179,13 +202,12 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                 stats["damage_dealt_p2"] += h1_diff
                 stats["hits_landed_p2"] += 1
                 hit_flash = 3
-                is_blocked = (action1 == Action.BLOCK)
+                is_blocked = (action1 in (Action.BLOCK, Action.BLOCK_LOW))
                 spark_col = SPARK_BLOCK if is_blocked else SPARK_HIT
                 hit_x = ARENA_OFFSET_X + int(state.fighter1.x)
                 hit_y = FLOOR_HEIGHT - 60
                 sparks.append({"x": hit_x, "y": hit_y, "colour": spark_col, "frame": 0})
 
-                # Hit-stop and shake
                 is_heavy = (h1_diff > 0.08)
                 hit_stop = 6 if is_heavy else 3
                 if is_heavy:
@@ -204,7 +226,7 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                 stats["damage_dealt_p1"] += h2_diff
                 stats["hits_landed_p1"] += 1
                 hit_flash = 3
-                is_blocked = (action2 == Action.BLOCK)
+                is_blocked = (action2 in (Action.BLOCK, Action.BLOCK_LOW))
                 spark_col = SPARK_BLOCK if is_blocked else SPARK_HIT
                 hit_x = ARENA_OFFSET_X + int(state.fighter2.x)
                 hit_y = FLOOR_HEIGHT - 60
@@ -222,6 +244,37 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                     combo1 = 1
                 combo1_timer = 30
                 stats["longest_combo_p1"] = max(stats["longest_combo_p1"], combo1)
+
+            # --- Popup Combat Text (Phase 6) ---
+            for f in (state.fighter1, state.fighter2):
+                if f.last_hit_effect != "none":
+                    effect = f.last_hit_effect
+                    fx = ARENA_OFFSET_X + int(f.x)
+                    fy = FLOOR_HEIGHT - 110
+                    colors = {
+                        "counter": (255, 68, 68),
+                        "parry": (0, 229, 255),
+                        "guard_break": (224, 64, 251),
+                        "burst": (255, 215, 0),
+                        "tech": (0, 230, 118),
+                        "wall_bounce": (255, 171, 0),
+                        "ground_bounce": (255, 145, 0),
+                    }
+                    col = colors.get(effect, (255, 255, 255))
+                    popups.append({
+                        "text": f"{effect.replace('_', ' ').upper()}!",
+                        "x": fx,
+                        "y": fy,
+                        "color": col,
+                        "lifetime": 35,
+                    })
+                    f.last_hit_effect = "none"
+
+            # Advance popups
+            for p in popups:
+                p["y"] -= 1.0
+                p["lifetime"] -= 1
+            popups = [p for p in popups if p["lifetime"] > 0]
 
             prev_health1 = state.fighter1.health
             prev_health2 = state.fighter2.health
@@ -262,7 +315,8 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                               char1, char2, is_mirror, human_player,
                               hit_flash, screen_shake, trail1, trail2,
                               combo1, combo2, getattr(agent1, "difficulty", None),
-                              getattr(agent2, "difficulty", None), sparks)
+                              getattr(agent2, "difficulty", None), sparks,
+                              popups, training_mode, dummy_mode)
             pygame.display.flip()
             clock.tick(int(FPS * speed_mult))
 
@@ -330,8 +384,9 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
 def _draw_fight_scene(surface, state, arena_bg, font_medium, font_small,
                       char1, char2, is_mirror, human_player,
                       hit_flash, screen_shake, trail1, trail2,
-                      combo1, combo2, diff1, diff2, sparks):
-    """Draw the arena, fighters with tags & shadows, and HUD."""
+                      combo1, combo2, diff1, diff2, sparks,
+                      popups=None, training_mode=False, dummy_mode=0):
+    """Draw the arena, fighters, projectiles, popups, super freeze, and HUD."""
     # Apply screen shake offset
     shake_x = 0
     shake_y = 0
@@ -369,6 +424,57 @@ def _draw_fight_scene(surface, state, arena_bg, font_medium, font_small,
                  player_num=2,
                  is_mirror=is_mirror,
                  is_human=(human_player == 2))
+
+    # Draw Projectiles (Phase 4)
+    for p in state.projectiles:
+        px = ARENA_OFFSET_X + int(p.x) + shake_x
+        py = FLOOR_HEIGHT - 45 + shake_y
+        p_col = (0, 220, 255) if p.owner == 1 else (255, 120, 40)
+        pygame.draw.circle(surface, p_col, (px, py), 8)
+        pygame.draw.circle(surface, (255, 255, 255), (px, py), 4)
+        trail_dir = -1 if p.vx > 0 else 1
+        pygame.draw.line(surface, p_col, (px, py), (px + trail_dir * 18, py), 3)
+
+    # Draw Popup Combat Text (Phase 6)
+    if popups:
+        for pop in popups:
+            p_surf = font_medium.render(pop["text"], True, pop["color"])
+            p_rect = p_surf.get_rect(center=(pop["x"], pop["y"]))
+            # Drop shadow
+            shadow_surf = font_medium.render(pop["text"], True, (0, 0, 0))
+            surface.blit(shadow_surf, (p_rect.x + 2, p_rect.y + 2))
+            surface.blit(p_surf, p_rect)
+
+    # Super Flash Freeze Screen Darken (Phase 6)
+    if state.super_freeze_frames > 0:
+        dark = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        dark.fill((0, 0, 0, 150))
+        surface.blit(dark, (0, 0))
+        super_font = pygame.font.Font(None, 72)
+        s_text = super_font.render("SUPER!", True, (255, 215, 0))
+        surface.blit(s_text, s_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 40)))
+
+    # Training Mode Hitbox / Hurtbox Overlay & Frame Data (Phase 6)
+    if training_mode:
+        dummy_names = ["STAND", "CROUCH", "BLOCK ALL", "RANDOM"]
+        d_text = f"TRAINING MODE | DUMMY (F2): {dummy_names[dummy_mode]}"
+        d_surf = font_small.render(d_text, True, (0, 255, 255))
+        surface.blit(d_surf, (SCREEN_WIDTH // 2 - d_surf.get_width() // 2, 75))
+
+        for f, num in ((f1, 1), (f2, 2)):
+            fx = ARENA_OFFSET_X + int(f.x) + shake_x
+            fy = FLOOR_HEIGHT - 90 + shake_y if not f.in_air else FLOOR_HEIGHT - 160 + shake_y
+            h_rect = pygame.Rect(fx - 25, fy, 50, 90)
+            pygame.draw.rect(surface, (0, 255, 0), h_rect, 2)
+            if f.attack_phase == "active":
+                reach = 60
+                atk_dir = 1 if (f.x < (f2.x if num == 1 else f1.x)) else -1
+                atk_rect = pygame.Rect(fx, fy + 20, atk_dir * reach, 30)
+                pygame.draw.rect(surface, (255, 0, 0), atk_rect, 2)
+            # Frame info tag
+            tag = f"ADV: {'+' if f.blockstun <= 0 else '-'}{f.hitstun or f.blockstun or 0}f"
+            tag_surf = font_small.render(tag, True, (255, 255, 0))
+            surface.blit(tag_surf, (fx - 30, fy - 20))
 
     # HUD (Health bars, damage trails, timer, combo counter, sparks)
     draw_hud(surface, state, font_medium, font_small, hit_flash=hit_flash,

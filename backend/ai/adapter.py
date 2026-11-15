@@ -37,11 +37,9 @@ def observation_for(state: FightState, player: int) -> Observation:
         enemy_wins = state.p1_rounds_won
 
     # Look up each fighter's body stats for reach
-    my_stats = CHARACTER_STATS[me.character_name]
-    enemy_stats = CHARACTER_STATS[enemy.character_name]
+    my_stats = CHARACTER_STATS.get(me.character_name, CHARACTER_STATS["Golden"])
+    enemy_stats = CHARACTER_STATS.get(enemy.character_name, CHARACTER_STATS["Golden"])
 
-    # Use light attack reach as the "reach" value the AI sees
-    # (this is the most common attack, so the AI plans around it)
     my_reach = light_attack_for(my_stats).reach
     enemy_reach = light_attack_for(enemy_stats).reach
 
@@ -62,8 +60,22 @@ def observation_for(state: FightState, player: int) -> Observation:
         enemy_cooldown=enemy.cooldown,
         my_recovery=me.recovery,
         enemy_recovery=enemy.recovery,
+        my_hitstun=me.hitstun,
+        enemy_hitstun=enemy.hitstun,
+        my_blockstun=me.blockstun,
+        enemy_blockstun=enemy.blockstun,
         my_in_air=me.in_air,
         enemy_in_air=enemy.in_air,
+        my_is_crouching=me.is_crouching,
+        enemy_is_crouching=enemy.is_crouching,
+        my_is_knocked_down=me.is_knocked_down,
+        enemy_is_knocked_down=enemy.is_knocked_down,
+        my_meter=me.meter,
+        enemy_meter=enemy.meter,
+        my_guard_meter=me.guard_meter,
+        enemy_guard_meter=enemy.guard_meter,
+        my_combo_count=me.combo_hits,
+        enemy_combo_count=enemy.combo_hits,
         my_last_action=me.last_action,
         enemy_last_action=enemy.last_action,
         arena_left=0,

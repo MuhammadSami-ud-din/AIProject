@@ -13,6 +13,8 @@ ROUND_SECONDS = 60     # length of one round
 LOW_TIME = 10          # seconds left that count as "time is running out"
 WINS_NEEDED = 2        # rounds needed to win the match
 
+LOG_SCHEMA_VERSION = 3
+
 # The numbers given to the learning code, always in this order.
 FEATURE_NAMES = (
     "distance",
@@ -31,6 +33,20 @@ FEATURE_NAMES = (
     "room_behind_me",
     "room_behind_enemy",
     "enemy_direction",
+    "my_is_crouching",
+    "enemy_is_crouching",
+    "my_hitstun",
+    "enemy_hitstun",
+    "my_blockstun",
+    "enemy_blockstun",
+    "my_is_knocked_down",
+    "enemy_is_knocked_down",
+    "my_meter",
+    "enemy_meter",
+    "my_guard_meter",
+    "enemy_guard_meter",
+    "my_combo_count",
+    "enemy_combo_count",
 )
 
 # Pairs of "my" and "enemy" parts, used to look from the enemy's side.
@@ -43,6 +59,13 @@ _MIRROR_PAIRS = (
     ("my_last_action", "enemy_last_action"),
     ("my_reach", "enemy_reach"),
     ("my_rounds_won", "enemy_rounds_won"),
+    ("my_is_crouching", "enemy_is_crouching"),
+    ("my_hitstun", "enemy_hitstun"),
+    ("my_blockstun", "enemy_blockstun"),
+    ("my_is_knocked_down", "enemy_is_knocked_down"),
+    ("my_meter", "enemy_meter"),
+    ("my_guard_meter", "enemy_guard_meter"),
+    ("my_combo_count", "enemy_combo_count"),
 )
 
 
@@ -73,10 +96,26 @@ class Observation:
     enemy_cooldown: int = 0           # frames until the enemy can attack again
     my_recovery: int = 0              # frames I am stuck after my attack
     enemy_recovery: int = 0           # frames the enemy is stuck after its attack
+    my_hitstun: int = 0               # frames I am in hitstun
+    enemy_hitstun: int = 0            # frames enemy is in hitstun
+    my_blockstun: int = 0             # frames I am in blockstun
+    enemy_blockstun: int = 0          # frames enemy is in blockstun
 
-    # Jumping
+    # Jumping and Stances
     my_in_air: bool = False
     enemy_in_air: bool = False
+    my_is_crouching: bool = False
+    enemy_is_crouching: bool = False
+    my_is_knocked_down: bool = False
+    enemy_is_knocked_down: bool = False
+
+    # Meters and Combos (Phases 2 & 3)
+    my_meter: float = 0.0             # 0 to 100
+    enemy_meter: float = 0.0          # 0 to 100
+    my_guard_meter: float = 100.0     # 0 to 100
+    enemy_guard_meter: float = 100.0  # 0 to 100
+    my_combo_count: int = 0
+    enemy_combo_count: int = 0
 
     # Last frame's moves
     my_last_action: Action = Action.IDLE
@@ -105,14 +144,16 @@ class Observation:
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
         for name in ("my_reach", "enemy_reach", "frame",
-                     "my_cooldown", "enemy_cooldown", "my_recovery", "enemy_recovery"):
+                     "my_cooldown", "enemy_cooldown", "my_recovery", "enemy_recovery",
+                     "my_hitstun", "enemy_hitstun", "my_blockstun", "enemy_blockstun"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} cannot be negative")
         if self.round_length <= 0:
             raise ValueError("round_length must be above 0")
         if not 0 <= self.time_left <= self.round_length:
             raise ValueError(f"time_left must be between 0 and {self.round_length}")
-        for name in ("my_in_air", "enemy_in_air"):
+        for name in ("my_in_air", "enemy_in_air", "my_is_crouching", "enemy_is_crouching",
+                     "my_is_knocked_down", "enemy_is_knocked_down"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be True or False")
         for name in ("my_last_action", "enemy_last_action"):
@@ -307,6 +348,20 @@ class Observation:
             "room_behind_me": self.room_behind_me / width,
             "room_behind_enemy": self.room_behind_enemy / width,
             "enemy_direction": self.enemy_direction,
+            "my_is_crouching": float(self.my_is_crouching),
+            "enemy_is_crouching": float(self.enemy_is_crouching),
+            "my_hitstun": frames(self.my_hitstun),
+            "enemy_hitstun": frames(self.enemy_hitstun),
+            "my_blockstun": frames(self.my_blockstun),
+            "enemy_blockstun": frames(self.enemy_blockstun),
+            "my_is_knocked_down": float(self.my_is_knocked_down),
+            "enemy_is_knocked_down": float(self.enemy_is_knocked_down),
+            "my_meter": self.my_meter / 100.0,
+            "enemy_meter": self.enemy_meter / 100.0,
+            "my_guard_meter": self.my_guard_meter / 100.0,
+            "enemy_guard_meter": self.enemy_guard_meter / 100.0,
+            "my_combo_count": float(self.my_combo_count),
+            "enemy_combo_count": float(self.enemy_combo_count),
         }
 
 

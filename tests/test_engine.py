@@ -88,6 +88,18 @@ def test_forward_moves_toward_enemy():
     assert s2.fighter1.x > old_x
 
 
+def test_fighter2_forward_moves_smoothly_no_teleport():
+    """Fighter 2 walks toward enemy by walk_speed, never teleports."""
+    s = make_initial_state("Golden", "Crimson")
+    assert s.fighter1.x == 200.0
+    assert s.fighter2.x == 600.0
+
+    s2 = step(s, Action.IDLE, Action.FORWARD)
+    # Fighter 2 walks left by walk_speed (4 px) -> 596.0
+    assert s2.fighter2.x == 596.0
+    assert s2.fighter1.x == 200.0
+
+
 def test_back_moves_away_from_enemy():
     s = make_initial_state()
     old_x = s.fighter1.x
@@ -197,6 +209,9 @@ def test_blocking_reduces_damage():
     for state in (s_blocked, s_unblocked):
         state.fighter1.x = 100
         state.fighter2.x = 150
+
+    # Fighter 2 is already holding block (past the 4f parry window)
+    s_blocked.fighter2.block_held_frames = 5
 
     # Fighter 1 attacks, fighter 2 blocks in one, idles in the other
     s_blocked = step(s_blocked, Action.LIGHT, Action.BLOCK)

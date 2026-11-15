@@ -1,19 +1,20 @@
-"""Golden Tactician AI: adapts to the opponent's habits.
+"""Golden Tactician AI: reads the enemy and adapts during the fight.
 
-Golden starts balanced and then shifts its likes based on what the
-opponent does. It counts the enemy's actions and adjusts strategy.
+Golden is an adaptive strategist.
+Golden starts with balanced preferences, but adapts them as it observes
+the enemy's patterns (tracks how often they attack, block, jump, etc.).
 """
 
-from backend.ai.actions import Action, ALL_ACTIONS
+from backend.ai.actions import ALL_ACTIONS, ATTACKS, DEFENCE, Action
 from backend.ai.base_agent import Agent
 from backend.ai.choice import pick
 from backend.ai.observation import Observation
 from backend.ai.personalities import GOLDEN
-from backend.ai.zones import ZoneTracker, Zone, spacing_for, Spacing
+from backend.ai.zones import Spacing, Zone, ZoneTracker, spacing_for
 
 
 class GoldenAgent(Agent):
-    """Balanced adaptive fighter."""
+    """Adaptive strategist who learns during the fight."""
 
     def __init__(self, player=1, difficulty="LOW", seed=None):
         super().__init__(
@@ -24,12 +25,8 @@ class GoldenAgent(Agent):
             seed=seed,
         )
         self.zone_tracker = ZoneTracker()
-
-        # Track enemy habits for adaptation
         self.enemy_action_counts = {a: 0 for a in ALL_ACTIONS}
         self.total_observations = 0
-
-        # Current adapted likes (start same as personality, shift over time)
         self.current_likes = dict(self.personality.likes())
 
     def reset(self):
@@ -49,33 +46,32 @@ class GoldenAgent(Agent):
     def _adapt(self):
         """Shift likes based on what the enemy does a lot."""
         if self.total_observations < 10:
-            return  # not enough data yet
+            return
 
         p = self.personality
-        speed = p.adapt_speed  # 0.1 for Golden
+        speed = p.adapt_speed
 
         total = self.total_observations
-        attack_rate = (self.enemy_action_counts[Action.LIGHT] +
-                       self.enemy_action_counts[Action.HEAVY]) / total
-        block_rate = self.enemy_action_counts[Action.BLOCK] / total
+        attack_rate = sum(self.enemy_action_counts.get(a, 0) for a in ATTACKS) / total
+        block_rate = sum(self.enemy_action_counts.get(d, 0) for d in DEFENCE) / total
 
         base = p.likes()
 
-        # If the enemy attacks a lot, increase our block_punish preference
+        # If enemy attacks a lot, increase block_punish
         if attack_rate > 0.3:
             self.current_likes["block_punish"] = min(10, base["block_punish"] +
                                                       speed * 30 * (attack_rate - 0.3))
         else:
             self.current_likes["block_punish"] = base["block_punish"]
 
-        # If the enemy blocks a lot, increase closeness (get in and grab)
+        # If enemy blocks a lot, increase closeness (to throw)
         if block_rate > 0.3:
             self.current_likes["closeness"] = min(10, base["closeness"] +
                                                    speed * 20 * (block_rate - 0.3))
         else:
             self.current_likes["closeness"] = base["closeness"]
 
-        # If the enemy rarely attacks, push forward more aggressively
+        # If enemy rarely attacks, push forward
         if attack_rate < 0.1:
             self.current_likes["closeness"] = min(10, base["closeness"] +
                                                    speed * 20)
@@ -88,28 +84,31 @@ class GoldenAgent(Agent):
         panicking = obs.is_panicking(p)
         likes = self.current_likes
         spacing = spacing_for(obs.distance, p)
+        total = max(1, self.total_observations)
+        attack_rate = sum(self.enemy_action_counts.get(a, 0) for a in ATTACKS) / total
 
+        # --- Score each action ---
         for action in ALL_ACTIONS:
             score = 0.0
 
-            if action == Action.FORWARD:
-                # Weight by closeness preference
-                closeness_w = likes["closeness"] / 10  # 0 to 1
+            if action in (Action.FORWARD, Action.DASH):
+                closeness_w = likes["closeness"] / 10
+                mult = 1.2 if action == Action.DASH else 1.0
                 if zone == Zone.FAR:
-                    score = 3.0 + closeness_w * 5.0
+                    score = (6.0 + closeness_w * 3.5) * mult
                 elif zone == Zone.MID:
-                    score = 2.0 + closeness_w * 3.0
+                    score = (5.5 + closeness_w * 3.5) * mult
                 else:
-                    score = 1.0
+                    score = (3.0 + closeness_w * 2.0 if not obs.i_can_hit else 1.0)
 
-            elif action == Action.BACK:
+            elif action in (Action.BACK, Action.BACKDASH):
                 safe_w = likes["safe_distance"] / 10
-                if spacing == Spacing.TOO_CLOSE:
-                    score = 2.0 + safe_w * 4.0
+                if spacing == Spacing.TOO_CLOSE and not obs.i_can_hit:
+                    score = 1.5 + safe_w * 2.0
                 elif obs.i_am_cornered:
                     score = 0.3
                 else:
-                    score = 1.0 + safe_w * 1.0
+                    score = 0.8 + safe_w * 0.8
 
             elif action == Action.JUMP:
                 corner_w = likes["corner_avoid"] / 10
@@ -120,30 +119,41 @@ class GoldenAgent(Agent):
                 else:
                     score = 0.5
 
-            elif action == Action.LIGHT:
+            elif action in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB):
                 if not obs.can_attack:
                     continue
                 if obs.enemy_is_stuck and obs.i_can_hit:
-                    # Block-punish weighted by preference
                     punish_w = likes["block_punish"] / 10
-                    score = 5.0 + punish_w * 5.0
+                    score = 8.0 + punish_w * 2.0
                 elif obs.i_can_hit:
-                    score = 6.0
+                    score = 9.5
                 else:
                     score = 0.5
 
-            elif action == Action.HEAVY:
+            elif action in (Action.HEAVY, Action.HEAVY_KICK, Action.LOW_SWEEP, Action.OVERHEAD):
                 if not obs.can_attack:
                     continue
-                if obs.enemy_is_stuck and obs.i_can_hit:
+                can_hit_heavy = (obs.distance <= 100)
+                if obs.enemy_is_stuck and can_hit_heavy:
                     punish_w = likes["block_punish"] / 10
-                    score = 4.0 + punish_w * 5.0
-                elif obs.i_can_hit:
-                    score = 3.0
+                    score = 8.0 + punish_w * 2.0
+                elif can_hit_heavy:
+                    score = 9.0
                 else:
                     score = 0.3
 
-            elif action == Action.BLOCK:
+            elif action == Action.ANTI_AIR:
+                if not obs.can_attack:
+                    continue
+                score = 9.0 if obs.enemy_in_air and obs.i_can_hit else 0.2
+
+            elif action == Action.THROW:
+                if not obs.can_attack:
+                    continue
+                closeness_w = likes["closeness"] / 10
+                score = (6.0 + closeness_w * 3.0) if obs.distance <= 40 and obs.enemy_is_blocking else 0.2
+
+            elif action in (Action.BLOCK, Action.BLOCK_LOW):
                 if obs.my_in_air:
                     score = 0.0
                     continue
@@ -153,31 +163,60 @@ class GoldenAgent(Agent):
                 elif zone == Zone.CLOSE:
                     score = 2.0 + punish_w * 2.0
                 else:
-                    score = 1.0
+                    score = 0.5
+
+            elif action in (Action.CROUCH, Action.CROUCH_KICK, Action.JUMP_PUNCH, Action.JUMP_KICK):
+                score = 1.0 if obs.i_can_hit else 0.3
+
+            # --- Golden Signature Moves (Phase 4 & 5) ---
+            elif action == Action.BURST:
+                if obs.my_hitstun > 10 and obs.my_meter >= 50.0 and obs.my_health < 0.40:
+                    score = 10.0
+                else:
+                    score = 0.0
+
+            elif action == Action.SPECIAL_NEUTRAL:
+                # Golden Read: predictive counter (uses when enemy has a distinct predictable habit)
+                top_action_count = max(self.enemy_action_counts.values()) if self.enemy_action_counts else 0
+                has_habit = self.total_observations > 40 and (top_action_count / total > 0.45)
+                score = 8.5 if (has_habit and zone == Zone.MID) else 0.2
+
+            elif action == Action.SPECIAL_DOWN:
+                # Tactician Stance: stance transition
+                score = 1.0 if zone == Zone.FAR else 0.2
+
+            elif action == Action.SPECIAL_FORWARD:
+                # Gambit Strike: high-risk high-reward poke
+                if obs.enemy_is_stuck and obs.distance <= 90:
+                    score = 9.5
+                elif obs.distance <= 90 and obs.can_attack and obs.enemy_is_open:
+                    score = 7.5
+                else:
+                    score = 0.5
+
+            elif action == Action.SPECIAL_BACK:
+                # Tactical Step: reposition
+                score = 3.0 if obs.enemy_is_attacking and zone == Zone.CLOSE else 0.2
+
+            elif action == Action.SUPER:
+                # Checkmate super finisher
+                super_cost = 60.0 if obs.my_health < 0.25 else 100.0
+                if obs.my_meter >= super_cost and obs.distance <= 100 and obs.can_attack:
+                    score = 10.5 if obs.enemy_is_stuck or obs.enemy_hitstun > 0 else 7.5
+                else:
+                    score = 0.0
 
             elif action == Action.IDLE:
-                score = 0.3
+                score = 0.2
 
-            # --- Time pressure ---
-            if obs.time_running_out:
-                time_w = likes["time_pressure"] / 10
-                if obs.health_lead > 0:
-                    # We're ahead — play safe
-                    if action in (Action.BLOCK, Action.BACK):
-                        score *= 1.0 + time_w
-                    elif action in (Action.LIGHT, Action.HEAVY):
-                        score *= 1.0 - time_w * 0.5
-                else:
-                    # We're behind — attack more
-                    if action in (Action.LIGHT, Action.HEAVY, Action.FORWARD):
-                        score *= 1.0 + time_w * 0.5
+            else:
+                score = 0.0
 
             # --- Panic mode ---
             if panicking:
-                aggression = p.panic_aggression  # 1.0 for Golden
-                if action in (Action.LIGHT, Action.HEAVY, Action.FORWARD):
-                    score *= aggression
-                elif action == Action.BLOCK:
+                if action in (Action.LIGHT, Action.HEAVY, Action.LIGHT_KICK, Action.HEAVY_KICK, Action.FORWARD):
+                    score *= 1.3
+                elif action in (Action.BLOCK, Action.BLOCK_LOW):
                     score *= 1.2
 
             scores[action] = score

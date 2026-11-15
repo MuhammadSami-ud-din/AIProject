@@ -16,7 +16,7 @@ from backend.ai.choice import pick
 # How many frames of delay for each difficulty level
 REACTION_DELAY = {"LOW": 24, "MEDIUM": 15, "HIGH": 7, "HELL": 1}
 
-# How often the AI picks a slightly worse move
+# How often the AI picks a suboptimal move
 MISTAKE_CHANCE = {"LOW": 0.30, "MEDIUM": 0.15, "HIGH": 0.05, "HELL": 0.01}
 
 # How many plies of minimax search

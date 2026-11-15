@@ -1,19 +1,21 @@
-"""Shadow Striker AI: fast hit-and-run fighter.
+"""Shadow Striker AI: fast movement, long reach, poke and retreat.
 
-Shadow uses its speed advantage to close in, land quick attacks,
-then retreat. It avoids staying in close range where it takes damage.
+Shadow is a hit-and-run fighter.
+Shadow uses superior speed and reach to stay at the edge of attack range,
+poking with safe attacks and escaping before the enemy can hit back.
+In panic mode, Shadow runs away and looks for long-range pokes.
 """
 
-from backend.ai.actions import Action, ALL_ACTIONS
+from backend.ai.actions import ALL_ACTIONS, Action
 from backend.ai.base_agent import Agent
 from backend.ai.choice import pick
 from backend.ai.observation import Observation
 from backend.ai.personalities import SHADOW
-from backend.ai.zones import ZoneTracker, Zone
+from backend.ai.zones import Zone, ZoneTracker
 
 
 class ShadowAgent(Agent):
-    """Fast, evasive hit-and-run fighter."""
+    """Fast hit-and-run fighter."""
 
     def __init__(self, player=1, difficulty="LOW", seed=None):
         super().__init__(
@@ -36,96 +38,140 @@ class ShadowAgent(Agent):
         p = self.personality
         panicking = obs.is_panicking(p)
 
+        # --- Score each action ---
         for action in ALL_ACTIONS:
             score = 0.0
 
-            if action == Action.FORWARD:
+            if action in (Action.FORWARD, Action.DASH):
                 # Shadow needs to close distance to attack
+                mult = 1.2 if action == Action.DASH else 1.0
                 if zone == Zone.FAR:
-                    score = 9.0  # sprint toward enemy
+                    score = 9.0 * mult
                 elif zone == Zone.MID:
-                    score = 7.0  # keep closing in
+                    score = 7.0 * mult
                 elif not obs.i_can_hit:
-                    score = 5.0  # not in range yet, move closer
+                    score = 5.0 * mult
                 else:
-                    score = 1.0  # in range, focus on attacking
+                    score = 1.0
 
-                # Rush in when enemy is stuck (free punish)
                 if obs.enemy_is_stuck and not obs.i_can_hit:
-                    score = 8.0
+                    score = 8.0 * mult
 
-            elif action == Action.BACK:
-                # Back off only after attacking (hit and run)
+            elif action in (Action.BACK, Action.BACKDASH):
+                mult = 1.3 if action == Action.BACKDASH else 1.0
                 if obs.my_recovery > 0:
-                    score = 0.3  # can't move in recovery anyway
+                    score = 0.3
                 elif obs.i_am_cornered:
-                    score = 0.2  # can't retreat, must escape forward
+                    score = 0.2
                 elif zone == Zone.CLOSE and obs.my_cooldown > 0:
-                    score = 3.0  # just attacked, back off while on cooldown
+                    score = 4.0 * mult
                 else:
-                    score = 0.5
+                    score = 0.8 * mult
 
             elif action == Action.JUMP:
-                # Jump to escape corners
                 if obs.i_am_cornered:
                     score = 7.0
                 elif obs.enemy_is_attacking and zone == Zone.CLOSE:
-                    score = 3.0  # dodge
+                    score = 3.0
                 else:
                     score = 0.5
 
-            elif action == Action.LIGHT:
+            elif action in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB):
                 if not obs.can_attack:
                     continue
-                # Shadow pokes with fast light attacks
                 if obs.is_safe_poke:
-                    score = 10.0  # best possible: hit without retaliation
+                    score = 10.0
                 elif obs.i_can_hit and obs.enemy_is_stuck:
-                    score = 10.0  # punish hard
+                    score = 10.0
                 elif obs.i_can_hit:
-                    score = 9.0  # in range = always attack
+                    score = 9.0
                 elif obs.enemy_is_open and zone == Zone.MID:
-                    score = 3.0  # enemy can't fight back, close in
+                    score = 4.0
                 else:
                     score = 0.5
 
-            elif action == Action.HEAVY:
+            elif action in (Action.HEAVY, Action.HEAVY_KICK, Action.OVERHEAD, Action.LOW_SWEEP):
                 if not obs.can_attack:
                     continue
-                # Heavy only on confirmed punishes (high risk otherwise)
-                if obs.enemy_is_stuck and obs.i_can_hit:
-                    score = 8.0
-                elif obs.i_can_hit and obs.enemy_is_open:
-                    score = 4.0
+                can_hit_heavy = (obs.distance <= 115)
+                if obs.enemy_is_stuck and can_hit_heavy:
+                    score = 9.5
+                elif can_hit_heavy and obs.enemy_is_open:
+                    score = 8.5
+                elif can_hit_heavy:
+                    score = 7.0
                 else:
                     score = 0.2
 
-            elif action == Action.BLOCK:
+            elif action == Action.ANTI_AIR:
+                if not obs.can_attack:
+                    continue
+                score = 8.5 if obs.enemy_in_air and obs.i_can_hit else 0.2
+
+            elif action == Action.THROW:
+                if not obs.can_attack:
+                    continue
+                score = 6.0 if obs.distance <= 40 and obs.enemy_is_blocking else 0.2
+
+            elif action in (Action.BLOCK, Action.BLOCK_LOW):
                 if obs.my_in_air:
                     score = 0.0
-                    continue
-                if obs.enemy_can_hit and obs.enemy_is_attacking:
-                    score = 6.0  # block when threatened
+                elif obs.enemy_can_hit and obs.enemy_is_attacking:
+                    score = 7.0
                 else:
                     score = 0.5
 
+            elif action in (Action.CROUCH, Action.CROUCH_KICK, Action.JUMP_PUNCH, Action.JUMP_KICK):
+                score = 1.0 if obs.i_can_hit else 0.3
+
+            # --- Shadow Signature Moves (Phase 4 & 5) ---
+            elif action == Action.BURST:
+                if obs.my_hitstun > 10 and obs.my_meter >= 50.0 and obs.my_health < 0.40:
+                    score = 10.0
+                else:
+                    score = 0.0
+
+            elif action == Action.SPECIAL_NEUTRAL:
+                # Energy Dart: projectile zoner
+                score = 9.5 if zone in (Zone.FAR, Zone.MID) and obs.can_attack else 2.0
+
+            elif action == Action.SPECIAL_FORWARD:
+                # Shadow Step: teleport behind enemy (great for escaping corners)
+                if obs.i_am_cornered:
+                    score = 10.0
+                elif zone == Zone.CLOSE and obs.enemy_is_attacking:
+                    score = 9.0
+                else:
+                    score = 2.0
+
+            elif action == Action.SPECIAL_DOWN:
+                # Phantom Kick: low string mixup
+                score = 8.5 if obs.distance <= 85 and obs.can_attack else 0.5
+
+            elif action == Action.SPECIAL_BACK:
+                # Feint Strike: bait and reposition
+                score = 7.0 if zone == Zone.CLOSE else 0.5
+
+            elif action == Action.SUPER:
+                # Vanishing Arts: teleport combo super
+                super_cost = 60.0 if obs.my_health < 0.25 else 100.0
+                if obs.my_meter >= super_cost and obs.distance <= 180 and obs.can_attack:
+                    score = 10.5 if obs.enemy_is_stuck or obs.enemy_hitstun > 0 else 7.0
+                else:
+                    score = 0.0
+
             elif action == Action.IDLE:
-                score = 0.2
+                score = 0.1
 
-            # --- Corner escape: top priority for Shadow ---
-            if obs.i_am_cornered:
-                if action == Action.FORWARD:
-                    score += 5.0
-                elif action == Action.JUMP:
-                    score += 4.0
+            else:
+                score = 0.0
 
-            # --- Panic mode: Shadow plays more carefully ---
+            # --- Panic mode: run away! ---
             if panicking:
-                aggression = p.panic_aggression  # 0.8
-                if action in (Action.LIGHT, Action.HEAVY):
-                    score *= aggression
-                elif action == Action.BLOCK:
-                    score *= 1.3
+                if action in (Action.BACK, Action.BACKDASH):
+                    score *= 2.0
+                elif action in (Action.FORWARD, Action.DASH):
+                    score *= 0.3
 
             scores[action] = score
 

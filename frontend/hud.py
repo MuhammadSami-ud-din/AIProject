@@ -23,16 +23,16 @@ from frontend.theme import (
 def draw_hud(surface, state, font_medium, font_small, hit_flash=0,
              trail1=1.0, trail2=1.0, combo1=0, combo2=0,
              diff1=None, diff2=None, sparks=None):
-    """Draw health bars with sliding damage trails, timer, round-win dots, and sparks."""
+    """Draw health bars with sliding damage trails, guard/super meters, timer, and combo feedback."""
     f1 = state.fighter1
     f2 = state.fighter2
 
-    # --- Health bars ---
-    _draw_fighter_hud(surface, 30, 20, f1.health, trail1, f1.character_name,
+    # --- Health & Meter bars ---
+    _draw_fighter_hud(surface, 30, 20, f1, trail1, f1.character_name,
                       diff1, state.p1_rounds_won, font_small, left_aligned=True)
 
     _draw_fighter_hud(surface, SCREEN_WIDTH - 30 - HEALTH_BAR_WIDTH, 20,
-                      f2.health, trail2, f2.character_name,
+                      f2, trail2, f2.character_name,
                       diff2, state.p2_rounds_won, font_small, left_aligned=False)
 
     # --- Timer in center ---
@@ -52,12 +52,14 @@ def draw_hud(surface, state, font_medium, font_small, hit_flash=0,
 
     # --- Combo counters ---
     font_combo = pygame.font.Font(None, 36)
-    if combo1 >= 2:
-        c1_surf = font_combo.render(f"{combo1} HITS!", True, (255, 215, 0))
-        surface.blit(c1_surf, (50, 85))
-    if combo2 >= 2:
-        c2_surf = font_combo.render(f"{combo2} HITS!", True, (255, 215, 0))
-        surface.blit(c2_surf, (SCREEN_WIDTH - 160, 85))
+    if combo1 >= 2 or f1.combo_hits >= 2:
+        hits = max(combo1, f1.combo_hits)
+        c1_surf = font_combo.render(f"{hits} HITS!", True, (255, 215, 0))
+        surface.blit(c1_surf, (50, 95))
+    if combo2 >= 2 or f2.combo_hits >= 2:
+        hits = max(combo2, f2.combo_hits)
+        c2_surf = font_combo.render(f"{hits} HITS!", True, (255, 215, 0))
+        surface.blit(c2_surf, (SCREEN_WIDTH - 160, 95))
 
     # --- Hit Sparks ---
     if sparks:
@@ -72,19 +74,26 @@ def draw_hud(surface, state, font_medium, font_small, hit_flash=0,
         surface.blit(flash_surface, (0, 0))
 
 
-def _draw_fighter_hud(surface, x, y, health, trail_health, name,
+def _draw_fighter_hud(surface, x, y, fighter, trail_health, name,
                       difficulty, rounds_won, font, left_aligned=True):
-    """Draw one health bar, name, emblem, and round-win dots."""
+    """Draw one health bar, guard bar, super meter, name, emblem, and round-win dots."""
+    health = fighter.health
+    guard = fighter.guard_meter / 100.0
+    super_meter = fighter.meter / 100.0
+
     palette = PRIMARY_PALETTES.get(name, {})
     title = palette.get("title", name)
     accent_col = palette.get("accent", (255, 215, 0))
     emblem = palette.get("emblem", "compass")
 
-    # Name label (with difficulty if AI)
+    # Name label (with difficulty if AI and FURY badge if low health)
     label_text = f"{title}"
     if difficulty:
         label_text += f" [{difficulty}]"
-    label = font.render(label_text, True, WHITE)
+    if fighter.is_fury:
+        label_text += " [FURY!]"
+    label_col = (255, 80, 80) if fighter.is_fury else WHITE
+    label = font.render(label_text, True, label_col)
 
     # Emblem icon
     emblem_x = x if left_aligned else x + HEALTH_BAR_WIDTH - 12
@@ -96,7 +105,7 @@ def _draw_fighter_hud(surface, x, y, health, trail_health, name,
     else:
         surface.blit(label, (x + HEALTH_BAR_WIDTH - 20 - label.get_width(), y))
 
-    bar_y = y + 26
+    bar_y = y + 24
     bg_rect = pygame.Rect(x, bar_y, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT)
 
     # 1. Background
@@ -121,11 +130,39 @@ def _draw_fighter_hud(surface, x, y, health, trail_health, name,
             fill_rect = pygame.Rect(x + HEALTH_BAR_WIDTH - fill_w, bar_y, fill_w, HEALTH_BAR_HEIGHT)
         pygame.draw.rect(surface, col, fill_rect, border_radius=4)
 
-    # 4. Health bar border
-    pygame.draw.rect(surface, (200, 205, 220), bg_rect, 2, border_radius=4)
+    # 4. Health bar border (pulsing gold/red if FURY)
+    border_col = (255, 60, 60) if fighter.is_fury else (200, 205, 220)
+    pygame.draw.rect(surface, border_col, bg_rect, 2, border_radius=4)
 
-    # 5. Round-win dots (two dots below bar)
-    dot_y = bar_y + HEALTH_BAR_HEIGHT + 7
+    # 5. Guard meter bar (under health bar, height 4)
+    guard_y = bar_y + HEALTH_BAR_HEIGHT + 2
+    guard_w = int(HEALTH_BAR_WIDTH * max(0.0, min(1.0, guard)))
+    guard_bg = pygame.Rect(x, guard_y, HEALTH_BAR_WIDTH, 4)
+    pygame.draw.rect(surface, (30, 30, 45), guard_bg)
+    if guard_w > 0:
+        g_col = (80, 200, 255) if guard > 0.3 else (255, 60, 60)
+        if left_aligned:
+            g_rect = pygame.Rect(x, guard_y, guard_w, 4)
+        else:
+            g_rect = pygame.Rect(x + HEALTH_BAR_WIDTH - guard_w, guard_y, guard_w, 4)
+        pygame.draw.rect(surface, g_col, g_rect)
+
+    # 6. Super Meter bar (under guard bar, height 8)
+    meter_y = guard_y + 6
+    meter_w = int(HEALTH_BAR_WIDTH * max(0.0, min(1.0, super_meter)))
+    meter_bg = pygame.Rect(x, meter_y, HEALTH_BAR_WIDTH, 7)
+    pygame.draw.rect(surface, (20, 25, 40), meter_bg, border_radius=2)
+    if meter_w > 0:
+        m_col = (255, 215, 0) if super_meter >= 1.0 or (fighter.is_fury and super_meter >= 0.6) else (0, 190, 255)
+        if left_aligned:
+            m_rect = pygame.Rect(x, meter_y, meter_w, 7)
+        else:
+            m_rect = pygame.Rect(x + HEALTH_BAR_WIDTH - meter_w, meter_y, meter_w, 7)
+        pygame.draw.rect(surface, m_col, m_rect, border_radius=2)
+    pygame.draw.rect(surface, (100, 110, 130), meter_bg, 1, border_radius=2)
+
+    # 7. Round-win dots (two dots below super meter)
+    dot_y = meter_y + 13
     for dot_idx in range(2):
         dot_offset = dot_idx * 16
         dot_x = (x + 8 + dot_offset) if left_aligned else (x + HEALTH_BAR_WIDTH - 8 - dot_offset)

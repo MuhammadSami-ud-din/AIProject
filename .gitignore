@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local database files and exports
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/*.csv

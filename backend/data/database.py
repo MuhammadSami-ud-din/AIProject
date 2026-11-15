@@ -49,6 +49,12 @@ def get_connection(db_path=None):
     conn.execute("PRAGMA journal_mode=WAL;")  # faster for many writes
     conn.execute(_CREATE_TABLE)
     conn.execute(_CREATE_INDEX)
+    # Ensure all feature columns exist even if table was created previously
+    cursor = conn.execute("PRAGMA table_info(frames);")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    for name in FEATURE_NAMES:
+        if name not in existing_cols:
+            conn.execute(f"ALTER TABLE frames ADD COLUMN {name} REAL DEFAULT 0.0;")
     conn.commit()
     return conn
 
