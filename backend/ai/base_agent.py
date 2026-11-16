@@ -45,6 +45,7 @@ class Agent:
         self.over_budget_count = 0          # how many decisions took longer than one frame
         self.decision_times = deque(maxlen=HISTORY_FRAMES)  # recent times, for charts
         self.last_breakdown = {}            # time per part of the last decision
+        self._first_decision_logged = False
 
     def reset(self):
         """Called at the start of each round. Forget old notes."""
@@ -61,6 +62,15 @@ class Agent:
         """The game calls THIS every frame (not choose_action).
         It asks the brain for a move, times how long it took,
         and uses a safe move if the brain crashes (when strict is False)."""
+        if not self._first_decision_logged:
+            self._first_decision_logged = True
+            delay = getattr(self, "delay", 0)
+            mistake = getattr(self, "mistake_chance", 0.0)
+            s_depth = getattr(self, "search_depth", 0)
+            logger.debug(
+                "[FIRST DECISION] %s (P%d, class=%s) | difficulty=%s | delay=%df | mistake=%.0f%% | search_depth=%d",
+                self.name, self.player, type(self).__name__, self.difficulty, delay, mistake * 100, s_depth,
+            )
         self.last_breakdown = {}
         start = time.perf_counter()
         try:

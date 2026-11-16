@@ -1,0 +1,17 @@
+{
+  "personality": "Shadow",
+  "version": 1,
+  "total_steps": 512,
+  "git_commit": "2daebbc",
+  "seed": 42,
+  "timestamp": 1794819932.3571851,
+  "latest_metrics": {
+    "update": 1,
+    "total_steps": 512,
+    "mean_reward": 0.3064843714237213,
+    "policy_loss": -0.014856104680802673,
+    "value_loss": 36.113661885261536,
+    "entropy": 2.273839771747589,
+    "elapsed_time": 0.9635026454925537
+  }
+}

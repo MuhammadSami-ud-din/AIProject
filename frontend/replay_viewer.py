@@ -168,7 +168,7 @@ def _draw_replay_frame(surface, frame_data, idx, total, speed, paused,
 
     # Controls hint
     hint = font_tiny.render(
-        "Space: pause | ←/→: speed/step | Esc: exit", True, LIGHT_GREY
+        "Space: pause | < / >: speed/step | Esc: exit", True, LIGHT_GREY
     )
     surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 30)))
 

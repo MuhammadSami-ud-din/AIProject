@@ -7,10 +7,12 @@ costumes, emblems, and accessories:
   - Shadow Striker: thinnest body, purple + black, glowing teal eyes, long trailing scarf.
   - Golden Tactician: medium build, gold + white robe, flowing sash, compass emblem.
 
-Supports crouching postures, knockdowns, low/high block shields, and kick/punch extensions.
+Features fluid breathing bobbing, animated walking strides, dash ghost afterimages,
+hitstun recoil flinching, energetic attack slash arcs, and pulsing hexagonal energy shields.
 """
 
 import math
+import time
 import pygame
 
 from backend.ai.actions import Action
@@ -29,7 +31,7 @@ from frontend.theme import (
 def draw_fighter(surface, fighter_state, facing_right, arena_offset_x=0,
                  ground_y=FLOOR_HEIGHT, player_num=1, is_mirror=False,
                  is_human=False):
-    """Draw one fighter on the screen with full personality styling."""
+    """Draw one fighter on the screen with full personality styling and fluid animation."""
     name = fighter_state.character_name
     palette = get_fighter_palette(name, is_p2_mirror=(player_num == 2 and is_mirror))
     body_col = palette["body"]
@@ -48,6 +50,8 @@ def draw_fighter(surface, fighter_state, facing_right, arena_offset_x=0,
     screen_x = arena_offset_x + fighter_state.x
     cx = int(screen_x)
     arm_dir = 1 if facing_right else -1
+
+    anim_frame = getattr(fighter_state, "jump_frame", 0) or int(time.time() * 60) % 3600
 
     # Knockdown pose
     if fighter_state.is_knocked_down:
@@ -76,7 +80,27 @@ def draw_fighter(surface, fighter_state, facing_right, arena_offset_x=0,
         b_height = int(b_height * 0.75)
         leg_len = max(8, leg_len - 16)
 
-    body_top = ground_y - b_height - leg_len - jump_y + (crouch_offset * 0.5)
+    # Idle breathing bobbing
+    idle_bob = 0.0
+    if not fighter_state.in_air and not fighter_state.is_crouching:
+        idle_bob = math.sin(anim_frame * 0.12) * 2.2
+
+    # Hitstun recoil & flinch
+    recoil_x = 0.0
+    body_tilt = 0.0
+    if fighter_state.hitstun > 0:
+        recoil_x = -arm_dir * min(12.0, fighter_state.hitstun * 1.5)
+        body_tilt = -arm_dir * min(8.0, fighter_state.hitstun * 1.0)
+        idle_bob = 0.0
+    cx += int(recoil_x)
+
+    body_top = ground_y - b_height - leg_len - jump_y + (crouch_offset * 0.5) + idle_bob
+
+    # --- Dash Ghost Afterimages ---
+    is_dashing = fighter_state.last_action in (Action.DASH, Action.BACKDASH)
+    if is_dashing and not fighter_state.is_knocked_down:
+        _draw_ghost_afterimage(surface, cx - arm_dir * 22, body_top + 2, b_width, b_height, h_radius, body_col, 85)
+        _draw_ghost_afterimage(surface, cx - arm_dir * 42, body_top + 5, b_width, b_height, h_radius, body_col, 40)
 
     # --- 1. Floor Shadow ---
     _draw_shadow(surface, cx, ground_y, jump_y, player_num)
@@ -95,26 +119,62 @@ def draw_fighter(surface, fighter_state, facing_right, arena_offset_x=0,
 
     if is_kicking:
         # Front leg kicked out horizontally
-        kick_reach = 45 if "heavy" in fighter_state.attack_type or "sweep" in fighter_state.attack_type else 32
-        kick_y = hip_y + (leg_len if "sweep" in fighter_state.attack_type or "crouch" in fighter_state.attack_type else leg_len // 2)
+        kick_reach = 46 if ("heavy" in fighter_state.attack_type or "sweep" in fighter_state.attack_type) else 34
+        kick_y = hip_y + (leg_len if ("sweep" in fighter_state.attack_type or "crouch" in fighter_state.attack_type) else leg_len // 2)
         pygame.draw.line(surface, trim_col, (cx - hip_width, hip_y), (cx - hip_width - 4, hip_y + leg_len), 5)
         pygame.draw.line(surface, accent_col, (cx + hip_width, hip_y), (cx + arm_dir * kick_reach, kick_y), 6)
         pygame.draw.circle(surface, trim_col, (cx + arm_dir * kick_reach, kick_y), 6)
+        # Dynamic martial arts kick slash arc
+        _draw_attack_arc(surface, cx + arm_dir * 10, kick_y, arm_dir, kick_reach + 12, accent_col)
     else:
-        pygame.draw.line(surface, trim_col, (cx - hip_width, hip_y), (cx - hip_width - 6, hip_y + leg_len), 5)
-        pygame.draw.line(surface, trim_col, (cx + hip_width, hip_y), (cx + hip_width + 6, hip_y + leg_len), 5)
+        # Dynamic walking stride
+        is_moving = fighter_state.last_action in (Action.FORWARD, Action.BACK, Action.DASH, Action.BACKDASH)
+        if is_moving and not fighter_state.in_air and not fighter_state.is_crouching:
+            stride = math.sin(anim_frame * 0.45) * 12.0
+            pygame.draw.line(surface, trim_col, (cx - hip_width, hip_y), (cx - hip_width - 4 - int(stride), hip_y + leg_len), 5)
+            pygame.draw.line(surface, trim_col, (cx + hip_width, hip_y), (cx + hip_width + 4 + int(stride), hip_y + leg_len), 5)
+        else:
+            pygame.draw.line(surface, trim_col, (cx - hip_width, hip_y), (cx - hip_width - 6, hip_y + leg_len), 5)
+            pygame.draw.line(surface, trim_col, (cx + hip_width, hip_y), (cx + hip_width + 6, hip_y + leg_len), 5)
 
-    # --- 4. Torso / Body ---
-    body_rect = pygame.Rect(cx - b_width // 2, int(body_top), b_width, b_height)
+    # --- 4. Torso / Body with Hit-Flash or Adrenaline Pulsing Outline ---
+    body_rect = pygame.Rect(cx - b_width // 2 + int(body_tilt), int(body_top), b_width, b_height)
     pygame.draw.rect(surface, body_col, body_rect, border_radius=4)
-    pygame.draw.rect(surface, trim_col, body_rect, 2, border_radius=4)
+
+    is_adrenaline_red = (not is_human and fighter_state.health < 0.25)
+    if fighter_state.hitstun > 8:
+        border_col = (255, 240, 200)
+        border_w = 2
+    elif is_adrenaline_red:
+        pulse = 0.5 + 0.5 * math.sin(time.time() * 14.0)
+        border_col = (
+            min(255, int(body_col[0] + (255 - body_col[0]) * pulse)),
+            min(255, int(body_col[1] + (255 - body_col[1]) * pulse)),
+            min(255, int(body_col[2] + (255 - body_col[2]) * pulse)),
+        )
+        border_w = 3
+        glow_rect = body_rect.inflate(6, 6)
+        glow_surf = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(
+            glow_surf,
+            (accent_col[0], accent_col[1], accent_col[2], int(90 + 90 * pulse)),
+            glow_surf.get_rect(),
+            width=2,
+            border_radius=6,
+        )
+        surface.blit(glow_surf, glow_rect.topleft)
+    else:
+        border_col = trim_col
+        border_w = 2
+
+    pygame.draw.rect(surface, border_col, body_rect, border_w, border_radius=4)
 
     # Chest emblem
-    _draw_emblem(surface, cx, int(body_top + b_height * 0.35), emblem_type, accent_col)
+    _draw_emblem(surface, cx + int(body_tilt * 0.5), int(body_top + b_height * 0.35), emblem_type, accent_col)
 
     # Special costume details
     if accent_style == "robe_sash":
-        sash_rect = pygame.Rect(cx - b_width // 2, int(body_top + b_height * 0.65), b_width, 8)
+        sash_rect = pygame.Rect(cx - b_width // 2 + int(body_tilt), int(body_top + b_height * 0.65), b_width, 8)
         pygame.draw.rect(surface, accent_col, sash_rect)
         pygame.draw.line(surface, accent_col, (cx - arm_dir * 4, int(body_top + b_height * 0.65)),
                          (cx - arm_dir * 12, hip_y + 16), 4)
@@ -128,13 +188,16 @@ def draw_fighter(surface, fighter_state, facing_right, arena_offset_x=0,
 
     # --- 5. Head ---
     head_y = int(body_top - h_radius)
-    pygame.draw.circle(surface, body_col, (cx, head_y), h_radius)
-    pygame.draw.circle(surface, trim_col, (cx, head_y), h_radius, 2)
+    head_x = cx + int(body_tilt * 0.8)
+    pygame.draw.circle(surface, body_col, (head_x, head_y), h_radius)
+    pygame.draw.circle(surface, border_col, (head_x, head_y), h_radius, 2)
 
     # Eyes / visor
-    eye_x = cx + arm_dir * (h_radius // 2)
+    eye_x = head_x + arm_dir * (h_radius // 2)
     if name == "Shadow":
         pygame.draw.circle(surface, accent_col, (eye_x, head_y - 2), 3)
+        # Glowing eye flare
+        pygame.draw.circle(surface, (255, 255, 255), (eye_x, head_y - 2), 1)
     elif name == "Steel":
         pygame.draw.line(surface, accent_col, (eye_x - 4, head_y - 2), (eye_x + 4, head_y - 2), 3)
     else:
@@ -144,7 +207,7 @@ def draw_fighter(surface, fighter_state, facing_right, arena_offset_x=0,
     shoulder_y = int(body_top + 10)
     arm_extend = 0
     if fighter_state.attack_phase == "active" and not is_kicking:
-        arm_extend = 32 if "heavy" in fighter_state.attack_type or "overhead" in fighter_state.attack_type else 22
+        arm_extend = 34 if ("heavy" in fighter_state.attack_type or "overhead" in fighter_state.attack_type) else 24
     elif fighter_state.attack_phase == "startup":
         arm_extend = -10
 
@@ -168,29 +231,75 @@ def draw_fighter(surface, fighter_state, facing_right, arena_offset_x=0,
     else:
         pygame.draw.circle(surface, accent_col, (int(punch_x), int(punch_y)), 5)
 
-    # --- 7. Block Shield Effect (High & Low) ---
+    # Punch attack crescent / thrust streak
+    if fighter_state.attack_phase == "active" and not is_kicking:
+        _draw_attack_arc(surface, front_shoulder_x, int(punch_y), arm_dir, arm_len + arm_extend + 12, accent_col)
+
+    # --- 7. Block Shield Effect (Hexagonal Energy Barrier) ---
     is_blocking = (
         fighter_state.last_action in (Action.BLOCK, Action.BLOCK_LOW)
         or fighter_state.blockstun > 0
     )
     if is_blocking:
         is_low = fighter_state.is_crouching or fighter_state.last_action == Action.BLOCK_LOW
-        bx = cx + arm_dir * (b_width // 2 + 10)
+        bx = cx + arm_dir * (b_width // 2 + 12)
         if is_low:
-            by = int(ground_y - 36)
-            shield_surf = pygame.Surface((24, 35), pygame.SRCALPHA)
-            shield_surf.fill((60, 160, 240, 180))
-            pygame.draw.rect(shield_surf, (220, 245, 255), (0, 0, 24, 35), 2, border_radius=4)
-            surface.blit(shield_surf, (bx - 12, by))
+            by = int(ground_y - 38)
+            shield_surf = pygame.Surface((28, 38), pygame.SRCALPHA)
+            hex_pts = [(7, 0), (21, 0), (28, 19), (21, 38), (7, 38), (0, 19)]
+            pygame.draw.polygon(shield_surf, (40, 150, 240, 175), hex_pts)
+            pygame.draw.polygon(shield_surf, (220, 245, 255, 240), hex_pts, 2)
+            surface.blit(shield_surf, (bx - 14, by))
         else:
-            by = int(body_top + 6)
-            shield_surf = pygame.Surface((20, 52), pygame.SRCALPHA)
-            shield_surf.fill((60, 160, 240, 180))
-            pygame.draw.rect(shield_surf, (220, 245, 255), (0, 0, 20, 52), 2, border_radius=4)
-            surface.blit(shield_surf, (bx - 10, by))
+            by = int(body_top + 4)
+            shield_surf = pygame.Surface((28, 56), pygame.SRCALPHA)
+            hex_pts = [(7, 0), (21, 0), (28, 28), (21, 56), (7, 56), (0, 28)]
+            pygame.draw.polygon(shield_surf, (40, 160, 255, 175), hex_pts)
+            pygame.draw.polygon(shield_surf, (220, 245, 255, 245), hex_pts, 2)
+            pygame.draw.line(shield_surf, (255, 255, 255, 220), (14, 18), (14, 38), 2)
+            pygame.draw.line(shield_surf, (255, 255, 255, 220), (8, 28), (20, 28), 2)
+            surface.blit(shield_surf, (bx - 14, by))
 
-    # --- 8. Overhead Tag ---
+    # --- 8. Parry Radiant Burst ---
+    if getattr(fighter_state, "is_parrying", False) or getattr(fighter_state, "last_hit_effect", "") == "parry":
+        parry_surf = pygame.Surface((60, 60), pygame.SRCALPHA)
+        pygame.draw.circle(parry_surf, (0, 230, 255, 210), (30, 30), 26, 3)
+        pygame.draw.circle(parry_surf, (255, 255, 255, 250), (30, 30), 16, 2)
+        surface.blit(parry_surf, (cx + arm_dir * 25 - 30, int(body_top + b_height * 0.4) - 30))
+
+    # --- 9. Overhead Tag ---
     _draw_overhead_tag(surface, cx, head_y - h_radius - 12, player_num, is_human)
+
+
+def _draw_attack_arc(surface: pygame.Surface, sx: int, sy: int, arm_dir: int, reach: int, colour: tuple):
+    """Draw a dynamic glowing martial arts slash crescent."""
+    reach = max(24, reach)
+    arc_surf = pygame.Surface((reach + 20, 36), pygame.SRCALPHA)
+    arc_pts = [
+        (0, 18),
+        (reach // 2, 6),
+        (reach, 15),
+        (reach + 14, 18),
+        (reach, 21),
+        (reach // 2, 30),
+    ]
+    pygame.draw.polygon(arc_surf, (colour[0], colour[1], colour[2], 175), arc_pts)
+    pygame.draw.polygon(arc_surf, (255, 255, 255, 220), [(reach // 3, 16), (reach, 17), (reach + 10, 18), (reach, 19), (reach // 3, 20)])
+    if arm_dir < 0:
+        arc_surf = pygame.transform.flip(arc_surf, True, False)
+        surface.blit(arc_surf, (sx - reach - 20, sy - 18))
+    else:
+        surface.blit(arc_surf, (sx, sy - 18))
+
+
+def _draw_ghost_afterimage(surface: pygame.Surface, gx: int, body_top: float,
+                           b_width: int, b_height: int, h_radius: int, body_col: tuple, alpha: int):
+    """Render a faint trailing speed afterimage behind dashing fighters."""
+    ghost_surf = pygame.Surface((b_width + 10, b_height + h_radius * 2 + 10), pygame.SRCALPHA)
+    b_rect = pygame.Rect(5, h_radius * 2, b_width, b_height)
+    pygame.draw.rect(ghost_surf, (body_col[0], body_col[1], body_col[2], alpha), b_rect, border_radius=4)
+    pygame.draw.circle(ghost_surf, (body_col[0], body_col[1], body_col[2], alpha), (5 + b_width // 2, h_radius), h_radius)
+    surface.blit(ghost_surf, (gx - b_width // 2 - 5, int(body_top - h_radius * 2)))
 
 
 def _draw_shadow(surface, cx, ground_y, jump_y, player_num):
@@ -205,11 +314,15 @@ def _draw_shadow(surface, cx, ground_y, jump_y, player_num):
 
 
 def _draw_trailing_scarf(surface, cx, neck_y, arm_dir, colour):
+    """Render an undulating living scarf with fluid sine-wave physics."""
+    anim_frame = int(time.time() * 60) % 3600
     trail_dir = -arm_dir
-    p1 = (cx, neck_y)
-    p2 = (cx + trail_dir * 18, neck_y + 4)
-    p3 = (cx + trail_dir * 36, neck_y + 14)
-    pygame.draw.lines(surface, colour, False, [p1, p2, p3], 4)
+    p1 = (cx, int(neck_y))
+    p2 = (cx + trail_dir * 14, int(neck_y + math.sin(anim_frame * 0.18) * 4))
+    p3 = (cx + trail_dir * 28, int(neck_y + 8 + math.sin(anim_frame * 0.18 + 1.2) * 7))
+    p4 = (cx + trail_dir * 44, int(neck_y + 16 + math.sin(anim_frame * 0.18 + 2.4) * 10))
+    pygame.draw.lines(surface, colour, False, [p1, p2, p3, p4], 5)
+    pygame.draw.lines(surface, (255, 255, 255, 180), False, [p1, p2, p3], 2)
 
 
 def _draw_emblem(surface, cx, ey, emblem_type, colour):

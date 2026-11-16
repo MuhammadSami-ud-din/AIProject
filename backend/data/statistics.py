@@ -157,6 +157,8 @@ def _make_agent(name, player, difficulty="LOW", seed=None):
         return RandomAgent(player=player, seed=seed)
 
     if name in ("Crimson", "Steel", "Shadow", "Golden"):
-        return cls(player=player, difficulty=difficulty, seed=seed)
+        from backend.ai.difficulty import DifficultyWrapper
+        inner = cls(player=player, difficulty=difficulty, seed=seed)
+        return DifficultyWrapper(inner, difficulty=difficulty)
 
     return RandomAgent(player=player, seed=seed)

@@ -116,6 +116,11 @@ class FighterState:
         """Fury mode activates when health is below 25%."""
         return self.health < 0.25
 
+    @property
+    def is_dashing(self) -> bool:
+        """True when the fighter's current/last action is a forward or back dash."""
+        return self.last_action in (Action.DASH, Action.BACKDASH) or self.current_action in (Action.DASH, Action.BACKDASH)
+
     def copy(self):
         """A fresh copy that can be changed without touching the original."""
         return FighterState(

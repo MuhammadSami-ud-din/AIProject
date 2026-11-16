@@ -1,0 +1,7 @@
+{
+  "type": "behaviour_cloning",
+  "personality": "Shadow",
+  "test_accuracy": 0.2923076923076923,
+  "seed": 42,
+  "git_commit": "2daebbc"
+}

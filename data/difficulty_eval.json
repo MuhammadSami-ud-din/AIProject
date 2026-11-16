@@ -1,0 +1,44 @@
+{
+  "MEDIUM_vs_LOW": {
+    "higher_tier": "MEDIUM",
+    "lower_tier": "LOW",
+    "wins_higher": 4,
+    "wins_lower": 0,
+    "draws": 0,
+    "win_rate": 1.0,
+    "ci_95": [
+      0.5101101796138527,
+      1.0
+    ],
+    "p_value": 0.0625,
+    "statistically_superior": false
+  },
+  "HIGH_vs_MEDIUM": {
+    "higher_tier": "HIGH",
+    "lower_tier": "MEDIUM",
+    "wins_higher": 4,
+    "wins_lower": 0,
+    "draws": 0,
+    "win_rate": 1.0,
+    "ci_95": [
+      0.5101101796138527,
+      1.0
+    ],
+    "p_value": 0.0625,
+    "statistically_superior": false
+  },
+  "HELL_vs_HIGH": {
+    "higher_tier": "HELL",
+    "lower_tier": "HIGH",
+    "wins_higher": 4,
+    "wins_lower": 0,
+    "draws": 0,
+    "win_rate": 1.0,
+    "ci_95": [
+      0.5101101796138527,
+      1.0
+    ],
+    "p_value": 0.0625,
+    "statistically_superior": false
+  }
+}

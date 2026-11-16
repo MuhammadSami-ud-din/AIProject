@@ -7,7 +7,7 @@ import pytest
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 
 from backend.data.results_db import ResultsDB
-from frontend.screens import player_name_prompt, settings_screen, statistics_screen
+from frontend.screens import manual_screen, player_name_prompt, settings_screen, statistics_screen
 
 
 @pytest.fixture(autouse=True)
@@ -115,3 +115,15 @@ def test_settings_screen_csv_export_and_reset(mock_surface_clock, monkeypatch, t
     res_settings = settings_screen(surface, clock, settings)
     assert res_settings is not None
     assert os.path.exists("data/results_export.csv")
+
+
+def test_manual_screen_three_tabs(mock_surface_clock):
+    """Test manual screen displays and cycles through all three tabs."""
+    surface, clock = mock_surface_clock
+
+    # Queue Right arrow twice to cycle through all 3 tabs, then Escape
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT}))
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT}))
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE}))
+
+    manual_screen(surface, clock)

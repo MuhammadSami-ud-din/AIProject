@@ -47,13 +47,13 @@ def observation_for(state: FightState, player: int) -> Observation:
     time_left = state.round_frames_left / FRAMES_PER_SECOND
 
     return Observation(
-        my_x=me.x,
-        enemy_x=enemy.x,
-        my_health=me.health,
-        enemy_health=enemy.health,
+        my_x=max(0.0, min(float(ARENA_WIDTH), me.x)),
+        enemy_x=max(0.0, min(float(ARENA_WIDTH), enemy.x)),
+        my_health=max(0.0, min(1.0, me.health)),
+        enemy_health=max(0.0, min(1.0, enemy.health)),
         my_reach=my_reach,
         enemy_reach=enemy_reach,
-        time_left=min(time_left, ROUND_SECONDS),
+        time_left=max(0.0, min(time_left, ROUND_SECONDS)),
         round_length=ROUND_SECONDS,
         frame=state.frame,
         my_cooldown=me.cooldown,

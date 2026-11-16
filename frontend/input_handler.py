@@ -168,6 +168,9 @@ class InputHandler:
 
         # If an attack/tech action was pressed, push into buffer
         if new_action is not None:
+            # Burst (during hitstun) and Throw Tech (during grab) must execute immediately
+            if new_action in (Action.BURST, Action.THROW):
+                return new_action
             self.buffer.append((new_action, self.current_frame))
 
         # Check double-tap dashes
@@ -176,8 +179,8 @@ class InputHandler:
         elif is_backdash:
             self.buffer.append((Action.BACKDASH, self.current_frame))
 
-        # Check jump press
-        if "jump" in just_pressed and not in_air:
+        # Check jump press (allows ground jump + Shadow double-jump in air)
+        if "jump" in just_pressed:
             self.buffer.append((Action.JUMP, self.current_frame))
 
         # If we can act, consume the freshest valid buffered action

@@ -50,8 +50,8 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
 
     Returns a match summary dict or "quit".
     """
-    char1 = agent1.personality.name if agent1.personality else "Golden"
-    char2 = agent2.personality.name if agent2.personality else "Golden"
+    char1 = agent1.personality.name if getattr(agent1, "personality", None) else getattr(agent1, "character_name", "Golden")
+    char2 = agent2.personality.name if getattr(agent2, "personality", None) else getattr(agent2, "character_name", "Golden")
     is_mirror = (char1 == char2)
 
     # Pick an arena if not specified
@@ -107,11 +107,18 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
         combo2_timer = 0
         hit_flash = 0
         screen_shake = 0
+        shake_dir = 0
         hit_stop = 0
         sparks = []
+        shockwaves = []
+        dust_particles = []
         popups = []
+        f1_prev_in_air = False
+        f2_prev_in_air = False
         training_mode = False
         dummy_mode = 0  # 0: Stand, 1: Crouch, 2: Block All, 3: Random
+        show_debug = False
+        pause_result = None
         round_start_time = time.time()
 
         # Show round 1 intro
@@ -136,9 +143,11 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                         training_mode = not training_mode
                     elif event.key == pygame.K_F2:
                         dummy_mode = (dummy_mode + 1) % 4
+                    elif event.key == pygame.K_F3:
+                        show_debug = not show_debug
 
             if state.match_over and pause_result == "restart":
-                break  # Restart outer while loop
+                break  # Break inner loop to restart outer while loop
 
             # --- 2. Hit-Stop Freeze ---
             if hit_stop > 0:
@@ -149,10 +158,9 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                                   hit_flash, screen_shake, trail1, trail2,
                                   combo1, combo2, getattr(agent1, "difficulty", None),
                                   getattr(agent2, "difficulty", None), sparks,
-                                  popups, training_mode, dummy_mode)
-                pygame.display.flip()
-                clock.tick(int(FPS * speed_mult))
-                continue
+                                  popups, training_mode, dummy_mode,
+                                  shockwaves=shockwaves, dust_particles=dust_particles,
+                                  shake_dir=shake_dir)
                 pygame.display.flip()
                 clock.tick(int(FPS * speed_mult))
                 continue
@@ -160,22 +168,38 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
             # --- 3. Get Fighter Actions ---
             if human_player == 1:
                 can_act1 = (
-                    state.fighter1.recovery == 0
-                    and state.fighter1.hitstun == 0
-                    and state.fighter1.blockstun == 0
-                    and not state.fighter1.is_knocked_down
+                    (
+                        state.fighter1.recovery == 0
+                        and state.fighter1.hitstun == 0
+                        and state.fighter1.blockstun == 0
+                        and not state.fighter1.is_knocked_down
+                    )
+                    or state.fighter1.cancel_available
                 )
                 action1 = get_human_action(state.fighter2.x, state.fighter1.x, in_air=state.fighter1.in_air, can_act=can_act1)
                 obs2 = observation_for(state, 2)
-                action2, _ = agent2.decide(obs2)
+                if training_mode:
+                    if dummy_mode == 0:
+                        action2 = Action.IDLE
+                    elif dummy_mode == 1:
+                        action2 = Action.CROUCH
+                    elif dummy_mode == 2:
+                        action2 = Action.BLOCK_LOW if state.fighter1.is_crouching else Action.BLOCK
+                    else:
+                        action2, _ = agent2.decide(obs2)
+                else:
+                    action2, _ = agent2.decide(obs2)
             elif human_player == 2:
                 obs1 = observation_for(state, 1)
                 action1, _ = agent1.decide(obs1)
                 can_act2 = (
-                    state.fighter2.recovery == 0
-                    and state.fighter2.hitstun == 0
-                    and state.fighter2.blockstun == 0
-                    and not state.fighter2.is_knocked_down
+                    (
+                        state.fighter2.recovery == 0
+                        and state.fighter2.hitstun == 0
+                        and state.fighter2.blockstun == 0
+                        and not state.fighter2.is_knocked_down
+                    )
+                    or state.fighter2.cancel_available
                 )
                 action2 = get_human_action(state.fighter1.x, state.fighter2.x, in_air=state.fighter2.in_air, can_act=can_act2)
             else:
@@ -210,8 +234,18 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
 
                 is_heavy = (h1_diff > 0.08)
                 hit_stop = 6 if is_heavy else 3
-                if is_heavy:
-                    screen_shake = 6
+                screen_shake = 6 if is_heavy else 3
+                shake_dir = 1 if state.fighter2.x < state.fighter1.x else -1
+                shockwaves.append({
+                    "x": hit_x,
+                    "y": hit_y,
+                    "radius": 6.0,
+                    "max_radius": 40.0 if is_heavy else 25.0,
+                    "colour": (80, 220, 255) if is_blocked else (255, 255, 255),
+                    "lifetime": 9 if is_heavy else 6,
+                    "max_lifetime": 9 if is_heavy else 6,
+                    "width": 3 if is_heavy else 2,
+                })
 
                 # Combo tracking for P2
                 if combo2_timer > 0:
@@ -234,8 +268,18 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
 
                 is_heavy = (h2_diff > 0.08)
                 hit_stop = 6 if is_heavy else 3
-                if is_heavy:
-                    screen_shake = 6
+                screen_shake = 6 if is_heavy else 3
+                shake_dir = 1 if state.fighter1.x < state.fighter2.x else -1
+                shockwaves.append({
+                    "x": hit_x,
+                    "y": hit_y,
+                    "radius": 6.0,
+                    "max_radius": 40.0 if is_heavy else 25.0,
+                    "colour": (80, 220, 255) if is_blocked else (255, 255, 255),
+                    "lifetime": 9 if is_heavy else 6,
+                    "max_lifetime": 9 if is_heavy else 6,
+                    "width": 3 if is_heavy else 2,
+                })
 
                 # Combo tracking for P1
                 if combo1_timer > 0:
@@ -244,6 +288,64 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                     combo1 = 1
                 combo1_timer = 30
                 stats["longest_combo_p1"] = max(stats["longest_combo_p1"], combo1)
+
+            # Ground dust particles on landing or dashing
+            f1 = state.fighter1
+            f2 = state.fighter2
+            if f1_prev_in_air and not f1.in_air:
+                fx = ARENA_OFFSET_X + int(f1.x)
+                for _ in range(4):
+                    dust_particles.append({
+                        "x": fx + random.uniform(-10, 10),
+                        "y": FLOOR_HEIGHT - random.uniform(1, 4),
+                        "vx": random.uniform(-1.5, 1.5),
+                        "vy": random.uniform(-1.2, -0.3),
+                        "radius": random.uniform(3.0, 5.5),
+                        "lifetime": 14,
+                        "max_lifetime": 14,
+                        "colour": (190, 185, 175),
+                    })
+            if f2_prev_in_air and not f2.in_air:
+                fx = ARENA_OFFSET_X + int(f2.x)
+                for _ in range(4):
+                    dust_particles.append({
+                        "x": fx + random.uniform(-10, 10),
+                        "y": FLOOR_HEIGHT - random.uniform(1, 4),
+                        "vx": random.uniform(-1.5, 1.5),
+                        "vy": random.uniform(-1.2, -0.3),
+                        "radius": random.uniform(3.0, 5.5),
+                        "lifetime": 14,
+                        "max_lifetime": 14,
+                        "colour": (190, 185, 175),
+                    })
+            if getattr(f1, "is_dashing", False) and random.random() < 0.35:
+                fx = ARENA_OFFSET_X + int(f1.x)
+                d_dir = -1.5 if (f1.x < f2.x) else 1.5
+                dust_particles.append({
+                    "x": fx + random.uniform(-4, 4),
+                    "y": FLOOR_HEIGHT - random.uniform(1, 3),
+                    "vx": d_dir * random.uniform(0.8, 1.8),
+                    "vy": random.uniform(-0.8, -0.2),
+                    "radius": random.uniform(2.5, 4.5),
+                    "lifetime": 12,
+                    "max_lifetime": 12,
+                    "colour": (180, 175, 165),
+                })
+            if getattr(f2, "is_dashing", False) and random.random() < 0.35:
+                fx = ARENA_OFFSET_X + int(f2.x)
+                d_dir = -1.5 if (f2.x < f1.x) else 1.5
+                dust_particles.append({
+                    "x": fx + random.uniform(-4, 4),
+                    "y": FLOOR_HEIGHT - random.uniform(1, 3),
+                    "vx": d_dir * random.uniform(0.8, 1.8),
+                    "vy": random.uniform(-0.8, -0.2),
+                    "radius": random.uniform(2.5, 4.5),
+                    "lifetime": 12,
+                    "max_lifetime": 12,
+                    "colour": (180, 175, 165),
+                })
+            f1_prev_in_air = f1.in_air
+            f2_prev_in_air = f2.in_air
 
             # --- Popup Combat Text (Phase 6) ---
             for f in (state.fighter1, state.fighter2):
@@ -298,6 +400,17 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                 s["frame"] += 1
             sparks = [s for s in sparks if s["frame"] < 8]
 
+            for dp in dust_particles:
+                dp["x"] += dp["vx"]
+                dp["y"] += dp["vy"]
+                dp["radius"] += 0.15
+                dp["lifetime"] -= 1
+            dust_particles = [dp for dp in dust_particles if dp["lifetime"] > 0]
+
+            for sw in shockwaves:
+                sw["lifetime"] -= 1
+            shockwaves = [sw for sw in shockwaves if sw["lifetime"] > 0]
+
             # Decay flash and shake
             hit_flash = max(0, hit_flash - 1)
             screen_shake = max(0, screen_shake - 1)
@@ -316,7 +429,10 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                               hit_flash, screen_shake, trail1, trail2,
                               combo1, combo2, getattr(agent1, "difficulty", None),
                               getattr(agent2, "difficulty", None), sparks,
-                              popups, training_mode, dummy_mode)
+                              popups, training_mode, dummy_mode,
+                              shockwaves=shockwaves, dust_particles=dust_particles,
+                              shake_dir=shake_dir, show_debug=show_debug,
+                              agent1=agent1, agent2=agent2)
             pygame.display.flip()
             clock.tick(int(FPS * speed_mult))
 
@@ -370,6 +486,9 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
                                       font_banner, font_medium, font_small,
                                       char1, char2, is_mirror, human_player, speed_mult)
 
+        if pause_result == "restart":
+            continue
+
         # Match finished normally
         stats["winner_side"] = 1 if state.match_result == "p1" else (2 if state.match_result == "p2" else 0)
         stats["rounds_p1"] = state.p1_rounds_won
@@ -385,14 +504,16 @@ def _draw_fight_scene(surface, state, arena_bg, font_medium, font_small,
                       char1, char2, is_mirror, human_player,
                       hit_flash, screen_shake, trail1, trail2,
                       combo1, combo2, diff1, diff2, sparks,
-                      popups=None, training_mode=False, dummy_mode=0):
+                      popups=None, training_mode=False, dummy_mode=0,
+                      shockwaves=None, dust_particles=None, shake_dir=0,
+                      show_debug=False, agent1=None, agent2=None):
     """Draw the arena, fighters, projectiles, popups, super freeze, and HUD."""
     # Apply screen shake offset
     shake_x = 0
     shake_y = 0
     if screen_shake > 0:
-        shake_x = random.randint(-4, 4)
-        shake_y = random.randint(-4, 4)
+        shake_x = int(shake_dir * screen_shake * 1.5 + random.randint(-2, 2))
+        shake_y = random.randint(-screen_shake, screen_shake)
 
     # Arena background
     surface.blit(arena_bg, (shake_x, shake_y))
@@ -404,6 +525,17 @@ def _draw_fight_scene(surface, state, arena_bg, font_medium, font_small,
     pygame.draw.line(surface, (80, 85, 105),
                      (ARENA_OFFSET_X + ARENA_WIDTH + shake_x, FLOOR_HEIGHT - 220 + shake_y),
                      (ARENA_OFFSET_X + ARENA_WIDTH + shake_x, FLOOR_HEIGHT + shake_y), 2)
+
+    # Ground Dust Particles (Behind Fighters)
+    if dust_particles:
+        for dp in dust_particles:
+            ratio = max(0.0, min(1.0, dp["lifetime"] / max(1, dp["max_lifetime"])))
+            alpha = int(140 * ratio)
+            r = max(1, int(dp["radius"]))
+            if alpha > 0:
+                dp_surf = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+                pygame.draw.circle(dp_surf, (*dp["colour"], alpha), (r + 2, r + 2), r)
+                surface.blit(dp_surf, (int(dp["x"]) + shake_x - r - 2, int(dp["y"]) + shake_y - r - 2))
 
     # Draw Fighters
     f1 = state.fighter1
@@ -434,6 +566,18 @@ def _draw_fight_scene(surface, state, arena_bg, font_medium, font_small,
         pygame.draw.circle(surface, (255, 255, 255), (px, py), 4)
         trail_dir = -1 if p.vx > 0 else 1
         pygame.draw.line(surface, p_col, (px, py), (px + trail_dir * 18, py), 3)
+
+    # Expanding Shockwave Rings
+    if shockwaves:
+        for sw in shockwaves:
+            ratio = max(0.0, min(1.0, sw["lifetime"] / max(1, sw["max_lifetime"])))
+            progress = 1.0 - ratio
+            r = int(sw["radius"] + (sw["max_radius"] - sw["radius"]) * progress)
+            alpha = int(220 * ratio)
+            if r > 0 and alpha > 0:
+                sw_surf = pygame.Surface((r * 2 + 6, r * 2 + 6), pygame.SRCALPHA)
+                pygame.draw.circle(sw_surf, (*sw["colour"][:3], alpha), (r + 3, r + 3), r, sw.get("width", 2))
+                surface.blit(sw_surf, (sw["x"] + shake_x - r - 3, sw["y"] + shake_y - r - 3))
 
     # Draw Popup Combat Text (Phase 6)
     if popups:
@@ -479,7 +623,15 @@ def _draw_fight_scene(surface, state, arena_bg, font_medium, font_small,
     # HUD (Health bars, damage trails, timer, combo counter, sparks)
     draw_hud(surface, state, font_medium, font_small, hit_flash=hit_flash,
              trail1=trail1, trail2=trail2, combo1=combo1, combo2=combo2,
-             diff1=diff1, diff2=diff2, sparks=sparks)
+             diff1=diff1 if human_player != 1 else None,
+             diff2=diff2 if human_player != 2 else None,
+             sparks=sparks)
+
+    # F3 AI Difficulty & Adrenaline Debug Overlay (Step 4)
+    if show_debug:
+        from frontend.ai_viewer import _draw_profiling
+        font_tiny = pygame.font.Font(None, 16)
+        _draw_profiling(surface, agent1, agent2, font_tiny, state=state)
 
 
 def _show_round_intro(surface, clock, state, arena_bg, round_num,

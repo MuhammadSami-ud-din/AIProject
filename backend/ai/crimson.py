@@ -64,35 +64,47 @@ class CrimsonAgent(Agent):
                     score = 0.3
 
             elif action in (Action.HEAVY, Action.HEAVY_KICK, Action.LOW_SWEEP, Action.OVERHEAD):
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 can_hit_heavy = (obs.distance <= 85)
                 if can_hit_heavy and obs.enemy_is_stuck:
-                    score = 10.0  # huge punish!
+                    base = 10.0  # huge punish!
                 elif can_hit_heavy:
-                    score = 9.5  # brawler wants high damage!
+                    base = 9.5  # brawler wants high damage!
                 else:
-                    score = 0.5
+                    base = 0.5
+                if action == Action.HEAVY:
+                    score = base
+                elif action == Action.HEAVY_KICK:
+                    score = base * 0.88
+                elif action == Action.LOW_SWEEP:
+                    score = base * (0.94 if obs.enemy_is_blocking and not obs.enemy_is_crouching else 0.82)
+                else:  # OVERHEAD
+                    score = base * (0.94 if obs.enemy_is_crouching else 0.78)
 
             elif action in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB):
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 if obs.i_can_hit:
-                    score = 8.5
-                    if obs.enemy_is_stuck:
-                        score = 9.5
+                    base = 9.5 if obs.enemy_is_stuck else 8.5
                 elif zone == Zone.CLOSE:
-                    score = 4.0
+                    base = 4.0
                 else:
-                    score = 0.5
+                    base = 0.5
+                if action == Action.LIGHT:
+                    score = base
+                elif action == Action.LIGHT_KICK:
+                    score = base * 0.90
+                else:  # CROUCH_JAB
+                    score = base * 0.84
 
             elif action == Action.ANTI_AIR:
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 score = 9.0 if obs.enemy_in_air and obs.i_can_hit else 0.2
 
             elif action == Action.THROW:
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 score = 9.0 if obs.distance <= 40 else 0.2
 
@@ -100,11 +112,18 @@ class CrimsonAgent(Agent):
                 if obs.my_in_air:
                     score = 0.0
                 elif obs.enemy_can_hit and obs.enemy_is_attacking:
-                    score = 7.0
+                    score = 7.0 if action == Action.BLOCK else 6.2
                 else:
-                    score = 0.5
+                    score = 0.5 if action == Action.BLOCK else 0.3
 
-            elif action in (Action.CROUCH, Action.CROUCH_KICK, Action.JUMP_PUNCH, Action.JUMP_KICK):
+            elif action in (Action.JUMP_PUNCH, Action.JUMP_KICK):
+                if not obs.my_in_air or not obs.can_attack:
+                    continue
+                score = 8.5 if obs.distance <= 90 else 1.5
+
+            elif action in (Action.CROUCH, Action.CROUCH_KICK):
+                if obs.my_in_air or (action == Action.CROUCH_KICK and not obs.can_attack):
+                    continue
                 score = 1.0 if obs.i_can_hit else 0.2
 
             # --- Signature Moves (Phase 4 & 5) ---
@@ -116,6 +135,8 @@ class CrimsonAgent(Agent):
                     score = 0.0
 
             elif action == Action.SUPER:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Blood Fury 8-hit finisher
                 super_cost = 60.0 if obs.my_health < 0.25 else 100.0
                 if obs.my_meter >= super_cost and obs.distance <= 110:
@@ -124,6 +145,8 @@ class CrimsonAgent(Agent):
                     score = 0.0
 
             elif action == Action.SPECIAL_FORWARD:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Crimson Rush (dash punch / combo confirm)
                 if obs.distance <= 95:
                     score = 9.8 if obs.enemy_hitstun > 0 else 7.5
@@ -131,14 +154,20 @@ class CrimsonAgent(Agent):
                     score = 1.0
 
             elif action == Action.SPECIAL_NEUTRAL:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Rising Uppercut (anti-air launcher)
                 score = 10.0 if obs.enemy_in_air and obs.distance <= 70 else 0.5
 
             elif action == Action.SPECIAL_BACK:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Berserker Charge (armored rushdown)
-                score = 9.0 if obs.enemy_is_attacking and obs.distance <= 85 else 4.0
+                score = 9.0 if obs.enemy_is_attacking and obs.distance <= 85 else 3.5
 
             elif action == Action.SPECIAL_DOWN:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Clinch Slam (command grab, beats block)
                 if obs.distance <= 48:
                     score = 9.5 if obs.enemy_is_blocking else 6.0

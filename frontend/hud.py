@@ -174,6 +174,18 @@ def _draw_fighter_hud(surface, x, y, fighter, trail_health, name,
             pygame.draw.circle(surface, (60, 65, 80), (dot_x, dot_y), 5)
             pygame.draw.circle(surface, (120, 125, 140), (dot_x, dot_y), 5, 1)
 
+    # 8. Small ADRENALINE tag under health/meter bar when AI is in RED (< 25% HP)
+    if difficulty and health < 0.25:
+        font_tag = pygame.font.Font(None, 16)
+        tag_surf = font_tag.render("ADRENALINE", True, WHITE)
+        tag_w = tag_surf.get_width() + 10
+        tag_h = tag_surf.get_height() + 4
+        tag_x = (x + 42) if left_aligned else (x + HEALTH_BAR_WIDTH - 42 - tag_w)
+        tag_rect = pygame.Rect(tag_x, dot_y - tag_h // 2, tag_w, tag_h)
+        pygame.draw.rect(surface, (210, 40, 40), tag_rect, border_radius=3)
+        pygame.draw.rect(surface, accent_col, tag_rect, 1, border_radius=3)
+        surface.blit(tag_surf, tag_surf.get_rect(center=tag_rect.center))
+
 
 def _draw_small_emblem(surface, cx, cy, emblem_type, color):
     """Draw small 12x12 icon next to character name."""

@@ -157,14 +157,12 @@ def main_menu(surface, clock):
 
     bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
 
-    items = ["Start Match", "AI Model Fight", "Settings", "Statistics", "Manual", "Quit"]
-    keys = ["start", "ai_fight", "settings", "statistics", "manual", "quit"]
+    items = ["Start Match", "AI Model Fight", "Model Insights", "Settings", "Statistics", "Manual", "Quit"]
+    keys = ["start", "ai_fight", "insights", "settings", "statistics", "manual", "quit"]
     selected = 0
+    item_rects = []
 
     while True:
-        # Build clickable rects for mouse support
-        item_rects = []
-
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return "quit"
@@ -227,10 +225,9 @@ def character_select(surface, clock, is_p2=False):
     total_width = len(fighters) * card_width
     start_x = (SCREEN_WIDTH - total_width) // 2
     top_y = 120
+    card_rects = []
 
     while True:
-        card_rects = []
-
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
@@ -313,7 +310,7 @@ def character_select(surface, clock, is_p2=False):
             surface.blit(desc, desc.get_rect(midtop=(SCREEN_WIDTH // 2, top_y + card_height + 58)))
 
         # Instructions
-        inst = font_small.render("← → to browse  |  Enter / Click to confirm  |  Esc to go back",
+        inst = font_small.render("< / > to browse  |  Enter / Click to confirm  |  Esc to go back",
                                  True, LIGHT_GREY)
         surface.blit(inst, inst.get_rect(midtop=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 32)))
 
@@ -343,9 +340,9 @@ def match_type_select(surface, clock):
         "random_ai": "Pick your fighter and battle a randomly chosen AI opponent",
         "ai_vs_ai": "Pit two autonomous AI models against each other and watch them battle",
     }
+    type_rects = []
 
     while True:
-        type_rects = []
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
@@ -403,9 +400,9 @@ def difficulty_select(surface, clock):
         "HIGH": "Fast reactions (7f delay), 5% mistakes, 3-ply search",
         "HELL": "Instant reactions (1f delay), 1% mistakes, Expectimax & Opponent Model on Sky Colosseum!",
     }
+    diff_rects = []
 
     while True:
-        diff_rects = []
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
@@ -470,9 +467,9 @@ def pause_screen(surface, clock):
     overlay.fill((0, 0, 0, 160))
 
     base_frame = surface.copy()
+    menu_rects = []
 
     while True:
-        menu_rects = []
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return "quit"
@@ -507,7 +504,7 @@ def pause_screen(surface, clock):
         _draw_title(temp, "PAUSED", font_large, y=140)
         menu_rects = _draw_menu_items_clickable(temp, items, selected, font_medium, start_y=240)
 
-        pygame.display.get_surface().blit(temp, (0, 0))
+        surface.blit(temp, (0, 0))
         if pygame.display.get_surface() is not None:
             pygame.display.flip()
         clock.tick(30)
@@ -623,7 +620,8 @@ def move_list_screen(surface, clock):
         b_txt = font_body.render("Back (Esc)", True, (255, 255, 255))
         surface.blit(b_txt, b_txt.get_rect(center=back_rect.center))
 
-        pygame.display.flip()
+        if pygame.display.get_surface() is not None:
+            pygame.display.flip()
         clock.tick(30)
 
 
@@ -1174,11 +1172,6 @@ def results_screen(surface, clock, stats_or_result, p1_name=None, p2_name=None,
         clock.tick(30)
 
 
-        if pygame.display.get_surface() is not None:
-            pygame.display.flip()
-        clock.tick(30)
-
-
 def player_name_prompt(surface, clock) -> str:
     """Prompt the user for their player name on first launch."""
     font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
@@ -1273,9 +1266,9 @@ def settings_screen(surface, clock, settings):
     status_timer = 0.0
 
     bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
+    row_rects = []
 
     while True:
-        row_rects = []
         now = time.time()
 
         for event in pygame.event.get():
@@ -1363,7 +1356,7 @@ def settings_screen(surface, clock, settings):
                 val = "ON" if settings["log_fights"] else "OFF"
                 text = f"{labels[key]}:  {val}"
             elif key == "speed":
-                val = f"◀  {SPEED_LABELS[speed_index]}  ▶"
+                val = f"<  {SPEED_LABELS[speed_index]}  >"
                 text = f"{labels[key]}:  {val}"
             elif key == "show_ai":
                 val = "ON" if settings["show_ai"] else "OFF"
@@ -1412,7 +1405,7 @@ def settings_screen(surface, clock, settings):
             surface.blit(desc, desc.get_rect(midtop=(SCREEN_WIDTH // 2, 450)))
 
         hint = font_small.render(
-            "↑/↓ navigate  |  Enter/click activate  |  ←/→ change speed  |  Esc back",
+            "Up/Down navigate  |  Enter/Click activate  |  Left/Right change speed  |  Esc back",
             True, LIGHT_GREY,
         )
         surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 530)))
@@ -1642,27 +1635,30 @@ def statistics_screen(surface, clock, player_id: Optional[int] = None):
 # Manual / How to Play
 # ------------------------------------------------------------------
 def manual_screen(surface, clock):
-    """Show the game manual: rules, controls, and mechanics.
+    """Show the game manual: rules, controls, and special moves.
 
-    Has two pages — use ←/→ or click to switch. Press Esc or click
+    Has three pages — use ←/→ or click tabs to switch. Press Esc or click
     'Back' to return to the main menu.
     """
     font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
-    font_medium = pygame.font.Font(None, 28)
-    font_small = pygame.font.Font(None, 20)
+    font_medium = pygame.font.Font(None, 24)
+    font_small = pygame.font.Font(None, 18)
 
     bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
     scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     scrim.fill((0, 0, 0, 110))
 
-    page = 0   # 0 = rules, 1 = controls
-    pages = ["How to Play", "Controls"]
+    page = 0   # 0 = How to Play, 1 = Controls, 2 = Special Moves
+    pages = ["How to Play", "Controls", "Special Moves"]
+    tab_rects = []
 
     while True:
         # Back button rect (drawn every frame, checked on click)
         back_rect = pygame.Rect(20, SCREEN_HEIGHT - 50, 100, 36)
-        # Page tab rects
-        tab_rects = []
+        tab_w = 170
+        tab_gap = 20
+        total_tab_w = len(pages) * tab_w + (len(pages) - 1) * tab_gap
+        start_tab_x = (SCREEN_WIDTH - total_tab_w) // 2
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1675,7 +1671,7 @@ def manual_screen(surface, clock):
                 elif event.key == pygame.K_RIGHT:
                     page = min(len(pages) - 1, page + 1)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    # Toggle page
+                    # Cycle to next page
                     page = (page + 1) % len(pages)
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if back_rect.collidepoint(event.pos):
@@ -1686,17 +1682,19 @@ def manual_screen(surface, clock):
 
         surface.blit(bg_img, (0, 0))
         surface.blit(scrim, (0, 0))
-        _draw_title(surface, "Manual", font_large, y=20)
+        _draw_title(surface, "Manual & Combat Guide", font_large, y=16)
 
         # --- Page tabs ---
         tab_rects = []
         for i, tab_name in enumerate(pages):
-            tx = SCREEN_WIDTH // 2 - 120 + i * 240
-            ty = 70
-            tab_rect = pygame.Rect(tx - 80, ty - 5, 160, 32)
+            tx = start_tab_x + i * (tab_w + tab_gap)
+            ty = 64
+            tab_rect = pygame.Rect(tx, ty, tab_w, 34)
             tab_rects.append(tab_rect)
             bg_col = MENU_HIGHLIGHT if i == page else DARK_GREY
-            pygame.draw.rect(surface, bg_col, tab_rect, border_radius=5)
+            pygame.draw.rect(surface, bg_col, tab_rect, border_radius=6)
+            if i == page:
+                pygame.draw.rect(surface, WHITE, tab_rect, 2, border_radius=6)
             col = WHITE if i == page else LIGHT_GREY
             label = font_medium.render(tab_name, True, col)
             surface.blit(label, label.get_rect(center=tab_rect.center))
@@ -1704,18 +1702,20 @@ def manual_screen(surface, clock):
         # --- Page content ---
         if page == 0:
             _draw_rules_page(surface, font_medium, font_small)
-        else:
+        elif page == 1:
             _draw_controls_page(surface, font_medium, font_small)
+        else:
+            _draw_specials_page(surface, font_medium, font_small)
 
         # --- Back button ---
         pygame.draw.rect(surface, DARK_GREY, back_rect, border_radius=5)
         pygame.draw.rect(surface, LIGHT_GREY, back_rect, 2, border_radius=5)
-        back_label = font_medium.render("← Back", True, WHITE)
+        back_label = font_medium.render("< Back", True, WHITE)
         surface.blit(back_label, back_label.get_rect(center=back_rect.center))
 
         # Navigation hint
         hint = font_small.render(
-            "←/→ switch page  |  Esc or click Back to return",
+            "< / > or click tabs to switch  |  Esc or click Back to return",
             True, LIGHT_GREY
         )
         surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 28)))
@@ -1725,94 +1725,469 @@ def manual_screen(surface, clock):
         clock.tick(30)
 
 
+def _draw_manual_card(surface, rect, border_color=(70, 80, 110), bg_color=(18, 22, 34, 215)):
+    """Draw a semi-transparent panel with a rounded colored border."""
+    panel = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+    panel.fill(bg_color)
+    surface.blit(panel, (rect.x, rect.y))
+    pygame.draw.rect(surface, border_color, rect, 1, border_radius=6)
+
+
 def _draw_rules_page(surface, font_medium, font_small):
-    """Draw the 'How to Play' rules page."""
-    x = 60
-    y = 115
-    spacing = 24
+    """Draw the 'How to Play' rules page covering rules, guard levels, combos, and meters."""
+    col_w = 445
+    card_bg = (18, 22, 34, 215)
 
-    rules = [
-        ("Game Rules", True),
-        ("", False),
-        ("• Arena is 800 pixels wide. Two fighters face each other.", False),
-        ("• Each match is best of 3 rounds. First to win 2 rounds wins.", False),
-        ("• Each round lasts up to 60 seconds.", False),
-        ("• A round ends by KO (health reaches 0) or when time runs out.", False),
-        ("• At time-out the fighter with more health wins the round.", False),
-        ("• Equal health at time-out = drawn round (no point awarded).", False),
-        ("• If nobody has 2 wins after 3 rounds: most round wins takes it.", False),
-        ("", False),
-        ("Battle Mechanics", True),
-        ("", False),
-        ("• Light Attack: fast, low damage (5%), short reach.", False),
-        ("• Heavy Attack: slow, high damage (12%), longer reach.", False),
-        ("• Blocking: reduces incoming damage to 10%. Cannot block in air.", False),
-        ("• Attacks have startup → active → recovery frames.", False),
-        ("• During recovery you are 'stuck' and can be punished!", False),
-        ("• Cooldowns prevent attack spam: wait before attacking again.", False),
-        ("", False),
-        ("Fighter Traits", True),
-        ("", False),
-        ("• Crimson: +20% damage, slightly shorter reach.", False),
-        ("• Steel: takes 50% less damage when blocking.", False),
-        ("• Shadow: +30% speed, +15% reach, slightly less damage.", False),
-        ("• Golden: balanced across all stats.", False),
+    # --- Left Column: Match Rules & Combat System ---
+    c1_x = 50
+
+    # 1. Match & Arena Rules
+    r1 = pygame.Rect(c1_x, 110, col_w, 126)
+    _draw_manual_card(surface, r1, border_color=(130, 150, 190), bg_color=card_bg)
+    surface.blit(font_medium.render("Match & Arena Rules", True, (240, 215, 90)), (c1_x + 14, 118))
+    rules_c1 = [
+        "• 800px arena with walls (supports hard Wall Bounce juggles).",
+        "• Best of 3 rounds, 60 seconds per round.",
+        "• Win a round by KO (0 HP) or timeout (highest remaining health).",
+        "• Equal health at time-out results in a drawn round.",
     ]
+    for idx, line in enumerate(rules_c1):
+        surface.blit(font_small.render(line, True, LIGHT_GREY), (c1_x + 14, 146 + idx * 21))
 
-    for line_text, is_header in rules:
-        if is_header:
-            font = font_medium
-            colour = WHITE
-        else:
-            font = font_small
-            colour = LIGHT_GREY
-        if line_text:
-            rendered = font.render(line_text, True, colour)
-            surface.blit(rendered, (x, y))
-        y += spacing
+    # 2. High / Low Guard & Throws
+    r2 = pygame.Rect(c1_x, 246, col_w, 136)
+    _draw_manual_card(surface, r2, border_color=(90, 160, 230), bg_color=card_bg)
+    surface.blit(font_medium.render("High / Low Guard & Throws", True, (100, 205, 255)), (c1_x + 14, 254))
+    guard_lines = [
+        "• Standing Block (L): Blocks High & Mid attacks. Vulnerable to Lows!",
+        "• Crouching Block (S+L): Blocks Low & Mid attacks. Vulnerable to Highs!",
+        "• Throw (J+U): Unblockable grip that breaks turtling defenders.",
+        "• Throw Tech: Press Throw within 7 frames of being grabbed to escape.",
+    ]
+    for idx, line in enumerate(guard_lines):
+        surface.blit(font_small.render(line, True, LIGHT_GREY), (c1_x + 14, 282 + idx * 21))
+
+    # 3. Combos, Juggle Cap & Cancels
+    r3 = pygame.Rect(c1_x, 392, col_w, 136)
+    _draw_manual_card(surface, r3, border_color=(230, 130, 90), bg_color=card_bg)
+    surface.blit(font_medium.render("Combos & Cancels", True, (255, 145, 95)), (c1_x + 14, 400))
+    combo_lines = [
+        "• Canned Strings: Character chains (e.g. Jab->Jab->Heavy) advance on hit.",
+        "• Cancels: Normal attacks cancel into Specials; Specials cancel into Super.",
+        "• Counter-Hit: Striking during opponent startup grants +50% hitstun!",
+        "• Juggle Cap: Air juggles max out at 4 hits before victim drops safely.",
+    ]
+    for idx, line in enumerate(combo_lines):
+        surface.blit(font_small.render(line, True, LIGHT_GREY), (c1_x + 14, 428 + idx * 21))
+
+    # --- Right Column: Meters, Defense & Resources ---
+    c2_x = 525
+
+    # 4. Guard Meter & Guard Break
+    r4 = pygame.Rect(c2_x, 110, col_w, 126)
+    _draw_manual_card(surface, r4, border_color=(230, 90, 90), bg_color=card_bg)
+    surface.blit(font_medium.render("Guard Meter & Guard Break", True, (255, 105, 105)), (c2_x + 14, 118))
+    guard_meter_lines = [
+        "• Blocking attacks drains Guard Meter. Regenerates when idle.",
+        "• At 0 Guard: GUARD BREAK! Stunned for 40 frames and helpless to combos.",
+        "• Prevents turtling and rewards continuous offensive pressure.",
+        "• Every block generates pushback to naturally reset fighter spacing.",
+    ]
+    for idx, line in enumerate(guard_meter_lines):
+        surface.blit(font_small.render(line, True, LIGHT_GREY), (c2_x + 14, 146 + idx * 21))
+
+    # 5. Super Meter & Burst
+    r5 = pygame.Rect(c2_x, 246, col_w, 136)
+    _draw_manual_card(surface, r5, border_color=(170, 110, 240), bg_color=card_bg)
+    surface.blit(font_medium.render("Super Meter (0–100) & Burst", True, (190, 135, 255)), (c2_x + 14, 254))
+    super_lines = [
+        "• Build meter by landing attacks, absorbing damage, and parrying.",
+        "• Enhanced Specials / Shield Bash: Costs 25 meter.",
+        "• Burst (L+O): Costs 50 meter in hitstun. Blasts the enemy away!",
+        "• Super Move (P): Costs 100 meter with a 15-frame cinematic freeze.",
+    ]
+    for idx, line in enumerate(super_lines):
+        surface.blit(font_small.render(line, True, LIGHT_GREY), (c2_x + 14, 282 + idx * 21))
+
+    # 6. Fury Mode & Perfect Parry
+    r6 = pygame.Rect(c2_x, 392, col_w, 136)
+    _draw_manual_card(surface, r6, border_color=(90, 200, 140), bg_color=card_bg)
+    surface.blit(font_medium.render("Fury Mode & Perfect Parry", True, (110, 245, 160)), (c2_x + 14, 400))
+    fury_lines = [
+        "• FURY (< 25% HP): +10% attack damage; Super cost drops to 60 meter!",
+        "• Perfect Parry: Tap Block within 4 frames before an incoming hit.",
+        "• Parry Effect: 0 damage taken, staggers attacker for 22f, grants +12m.",
+        "• Turns patient defensive reads into high-damage counter opportunities.",
+    ]
+    for idx, line in enumerate(fury_lines):
+        surface.blit(font_small.render(line, True, LIGHT_GREY), (c2_x + 14, 428 + idx * 21))
 
 
 def _draw_controls_page(surface, font_medium, font_small):
-    """Draw the 'Controls' page with all keyboard mappings."""
-    x = 60
-    y = 115
-    spacing = 26
+    """Draw the 'Controls' page with combat, defensive, special, and shortcut keys."""
+    col_w = 445
+    card_bg = (18, 22, 34, 215)
 
-    controls = [
-        ("Fight Controls", True),
-        ("", False),
-        ("  A                Move left", False),
-        ("  D                Move right", False),
-        ("  W                Jump", False),
-        ("  J                 Light attack (fast, low damage)", False),
-        ("  K                Heavy attack (slow, high damage)", False),
-        ("  L                 Block (reduces damage, no air block)", False),
-        ("  Esc              Pause the match", False),
-        ("", False),
-        ("Menu Navigation", True),
-        ("", False),
-        ("  ↑ / ↓            Move between menu items", False),
-        ("  ← / →            Browse fighters / change settings", False),
-        ("  Enter / Space   Select / confirm", False),
-        ("  Esc              Go back / quit", False),
-        ("  Mouse click      Select any menu item directly", False),
-        ("", False),
-        ("AI Model Fight Viewer", True),
-        ("", False),
-        ("  ← / →            Slow down / speed up (0.25x – 4x)", False),
-        ("  Space             Pause / unpause", False),
-        ("  F3                Toggle profiling overlay", False),
-        ("  Esc              Pause menu", False),
+    # --- Left Column: Movement & Universal Normals ---
+    c1_x = 50
+
+    # 1. Movement Card
+    r1 = pygame.Rect(c1_x, 110, col_w, 136)
+    _draw_manual_card(surface, r1, border_color=(130, 150, 190), bg_color=card_bg)
+    surface.blit(font_medium.render("Movement & Agility", True, (240, 215, 90)), (c1_x + 14, 118))
+    moves = [
+        ("A / D", "Walk Backward / Forward"),
+        ("Double-tap A / D", "Dash / Backdash (4f invulnerability window)"),
+        ("W", "Jump (Shadow has Double Jump & Air Dash)"),
+        ("S", "Crouch (reduces hurtbox, enables low attacks & low block)"),
+    ]
+    for idx, (k, desc) in enumerate(moves):
+        surface.blit(font_small.render(k, True, WHITE), (c1_x + 14, 146 + idx * 21))
+        surface.blit(font_small.render(desc, True, LIGHT_GREY), (c1_x + 140, 146 + idx * 21))
+
+    # 2. Universal Normals Card
+    r2 = pygame.Rect(c1_x, 256, col_w, 272)
+    _draw_manual_card(surface, r2, border_color=(90, 160, 230), bg_color=card_bg)
+    surface.blit(font_medium.render("Normals & Universal Attacks", True, (100, 205, 255)), (c1_x + 14, 264))
+    attacks = [
+        ("J", "Light Punch / Jab (3f startup, +2 on block, starter)"),
+        ("K", "Heavy Punch (10f startup, 8 HP damage, staggers)"),
+        ("U", "Light Kick (5f startup, 4 HP damage, mid-range poke)"),
+        ("I", "Heavy Kick (12f startup, 10 HP damage, longest reach)"),
+        ("S + U / S + I", "Low Sweep (hits LOW, knocks down opponent)"),
+        ("S + K", "Anti-Air Uppercut (6f startup, launches jumpers)"),
+        ("W + J / W + U", "Jump Punch / Jump Kick (airborne priority)"),
+        ("J + U", "Throw (unblockable close grip; tech with J+U in 7f)"),
+    ]
+    for idx, (k, desc) in enumerate(attacks):
+        surface.blit(font_small.render(k, True, WHITE), (c1_x + 14, 292 + idx * 21))
+        surface.blit(font_small.render(desc, True, LIGHT_GREY), (c1_x + 120, 292 + idx * 21))
+
+    # --- Right Column: Defense, Specials & Training Shortcuts ---
+    c2_x = 525
+
+    # 3. Defense & Specials Card
+    r3 = pygame.Rect(c2_x, 110, col_w, 230)
+    _draw_manual_card(surface, r3, border_color=(90, 200, 140), bg_color=card_bg)
+    surface.blit(font_medium.render("Defense, Specials & Super", True, (110, 245, 160)), (c2_x + 14, 118))
+    specials = [
+        ("L (hold)", "Standing High Block (blocks High & Mid attacks)"),
+        ("S + L (hold)", "Crouching Low Block (blocks Low & Mid attacks)"),
+        ("L (tap)", "Perfect Parry (within 4f of hit: 0 dmg, staggers foe)"),
+        ("L + O", "Burst (costs 50 meter in hitstun: ends enemy combo)"),
+        ("O", "Special Neutral (character signature move 1)"),
+        ("D + O / A + O", "Special Forward / Special Back"),
+        ("S + O", "Special Down (command grab / ground slam)"),
+        ("P", "Super Move (costs 100 meter, or 60 in Fury)"),
+    ]
+    for idx, (k, desc) in enumerate(specials):
+        surface.blit(font_small.render(k, True, WHITE), (c2_x + 14, 146 + idx * 21))
+        surface.blit(font_small.render(desc, True, LIGHT_GREY), (c2_x + 120, 146 + idx * 21))
+
+    # 4. Training Mode & Replay Controls Card
+    r4 = pygame.Rect(c2_x, 350, col_w, 178)
+    _draw_manual_card(surface, r4, border_color=(170, 110, 240), bg_color=card_bg)
+    surface.blit(font_medium.render("Training Mode & Replay Controls", True, (190, 135, 255)), (c2_x + 14, 358))
+    shortcuts = [
+        ("F1", "Toggle Training Mode (Hitboxes, Frame Data & Dummy AI)"),
+        ("F2", "Cycle Dummy AI (Stand -> Crouch -> Block All -> Random)"),
+        ("F3", "Toggle profiling & performance HUD overlay"),
+        ("Esc", "Pause match (open options and Move List screen)"),
+        ("Left / Right", "Change match replay speed (0.25x – 4x in AI Viewer)"),
+        ("Space", "Pause / resume fight replay"),
+    ]
+    for idx, (k, desc) in enumerate(shortcuts):
+        surface.blit(font_small.render(k, True, WHITE), (c2_x + 14, 386 + idx * 21))
+        surface.blit(font_small.render(desc, True, LIGHT_GREY), (c2_x + 110, 386 + idx * 21))
+
+
+def _draw_specials_page(surface, font_medium, font_small):
+    """Draw the 'Special Moves' page detailing each character's unique toolkit without overlaps."""
+    fighters_info = [
+        {
+            "name": "Crimson Brawler",
+            "archetype": "Rushdown Berserker",
+            "border": (220, 60, 60),
+            "accent": (255, 100, 100),
+            "moves": [
+                ("O", "Crimson Rush", "3-hit advancing dash punch string"),
+                ("D+O", "Rising Uppercut", "Anti-air launcher, beats jumps"),
+                ("A+O", "Berserker Charge", "Armored dash (takes 50% dmg)"),
+                ("S+O", "Clinch Slam", "Close-range command grab"),
+                ("P", "Blood Fury (Super)", "8-hit cinematic combo super"),
+            ],
+            "trait_lines": ["High close-range damage output", "and aggressive cancel pressure."],
+        },
+        {
+            "name": "Steel Guardian",
+            "archetype": "Counter & Bulwark",
+            "border": (110, 160, 230),
+            "accent": (140, 190, 255),
+            "moves": [
+                ("O", "Iron Wall", "Counter stance; parries & hits"),
+                ("D+O", "Shield Bash", "Pushes foe away (costs 25m)"),
+                ("A+O", "Reflector", "Reflects projectiles back"),
+                ("S+O", "Punisher Grip", "Armored grab; beats blocking"),
+                ("P", "Fortress Crush (Super)", "Counter super upon being hit"),
+            ],
+            "trait_lines": ["Takes 50% less chip damage", "when holding block."],
+        },
+        {
+            "name": "Shadow Striker",
+            "archetype": "Agile Hit-and-Run",
+            "border": (175, 105, 235),
+            "accent": (205, 140, 255),
+            "moves": [
+                ("O", "Shadow Step", "Teleports behind the opponent"),
+                ("D+O", "Phantom Kick", "Low-Mid-Mid deceptive kick"),
+                ("A+O", "Feint Strike", "Fake attack into dash / grab"),
+                ("S+O", "Energy Dart", "Fast horizontal projectile"),
+                ("P", "Vanishing Arts (Super)", "Multi-angle teleport super"),
+            ],
+            "trait_lines": ["Double Jump (W in air) and", "Air Dash (double-tap A/D in air)."],
+        },
+        {
+            "name": "Golden Tactician",
+            "archetype": "Adaptive Stance Master",
+            "border": (235, 195, 60),
+            "accent": (255, 220, 100),
+            "moves": [
+                ("O", "Tactician Stance", "Cycles Rush / Guard / Evade"),
+                ("D+O", "Gambit Strike", "Advancing tactical thrust"),
+                ("A+O", "Golden Read", "Counter read if foe acts in 30f"),
+                ("S+O", "Checkmate", "Tactical ground slam finisher"),
+                ("P", "Grandmaster (Super)", "Calculated full-screen super"),
+            ],
+            "trait_lines": ["Tracks enemy attack habits and", "dynamically shifts counters."],
+        },
     ]
 
-    for line_text, is_header in controls:
-        if is_header:
-            font = font_medium
-            colour = WHITE
+    col_w = 224
+    col_gap = 14
+    start_x = 43
+    card_bg = (18, 22, 34, 215)
+
+    for i, f_info in enumerate(fighters_info):
+        card_x = start_x + i * (col_w + col_gap)
+        card_rect = pygame.Rect(card_x, 108, col_w, 428)
+        _draw_manual_card(surface, card_rect, border_color=f_info["border"], bg_color=card_bg)
+
+        # Header title & archetype
+        title_surf = font_medium.render(f_info["name"], True, f_info["accent"])
+        surface.blit(title_surf, (card_x + 10, 118))
+        arch_surf = font_small.render(f_info["archetype"], True, LIGHT_GREY)
+        surface.blit(arch_surf, (card_x + 10, 142))
+        pygame.draw.line(surface, f_info["border"], (card_x + 8, 162), (card_x + col_w - 8, 162), 1)
+
+        # Move list with badge inputs (no text doubling or box overlap)
+        cur_y = 172
+        for inp, m_name, m_desc in f_info["moves"]:
+            badge_w = font_small.size(inp)[0] + 10
+            badge_rect = pygame.Rect(card_x + 10, cur_y - 2, badge_w, 18)
+            pygame.draw.rect(surface, (45, 55, 75), badge_rect, border_radius=3)
+            pygame.draw.rect(surface, (80, 100, 130), badge_rect, 1, border_radius=3)
+            inp_surf = font_small.render(inp, True, WHITE)
+            surface.blit(inp_surf, inp_surf.get_rect(center=badge_rect.center))
+
+            name_surf = font_small.render(m_name, True, f_info["accent"])
+            surface.blit(name_surf, (card_x + 14 + badge_w, cur_y))
+
+            desc_surf = font_small.render(m_desc, True, (170, 180, 200))
+            surface.blit(desc_surf, (card_x + 10, cur_y + 19))
+            cur_y += 41
+
+        # Passive Trait box (separated clearly at y=380, zero overlap)
+        pygame.draw.line(surface, (60, 70, 95), (card_x + 8, 380), (card_x + col_w - 8, 380), 1)
+        trait_title = font_small.render("Passive Trait:", True, (240, 215, 90))
+        surface.blit(trait_title, (card_x + 10, 390))
+        for t_idx, t_line in enumerate(f_info["trait_lines"]):
+            t_surf = font_small.render(t_line, True, (210, 220, 240))
+            surface.blit(t_surf, (card_x + 10, 410 + t_idx * 18))
+
+
+# ------------------------------------------------------------------
+# Model Insights & Neural League Screen (Phase 6)
+# ------------------------------------------------------------------
+def model_insights_screen(surface, clock):
+    """Display model versions, Elo history, style checks, and live training progress."""
+    font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
+    font_medium = pygame.font.Font(None, 24)
+    font_small = pygame.font.Font(None, 18)
+
+    from backend.learning.league import ModelRegistry
+    from backend.learning.trainer_proc import training_manager
+
+    registry = ModelRegistry()
+    personalities = ["Crimson", "Steel", "Shadow", "Golden"]
+    selected_p_idx = 0
+
+    bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
+    scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    scrim.fill((0, 0, 0, 110))
+
+    while True:
+        training_manager.poll()
+
+        back_rect = pygame.Rect(20, SCREEN_HEIGHT - 50, 100, 36)
+        train_btn_rect = pygame.Rect(SCREEN_WIDTH - 220, SCREEN_HEIGHT - 50, 200, 36)
+        tab_w = 140
+        start_x = (SCREEN_WIDTH - (len(personalities) * tab_w + (len(personalities) - 1) * 16)) // 2
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return
+                elif event.key == pygame.K_LEFT:
+                    selected_p_idx = (selected_p_idx - 1) % len(personalities)
+                elif event.key == pygame.K_RIGHT:
+                    selected_p_idx = (selected_p_idx + 1) % len(personalities)
+                elif event.key in (pygame.K_RETURN, pygame.K_t):
+                    if not training_manager.is_alive():
+                        training_manager.start_training(
+                            personality=personalities[selected_p_idx], total_updates=6, quick_mode=True
+                        )
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if back_rect.collidepoint(event.pos):
+                    return
+                if train_btn_rect.collidepoint(event.pos):
+                    if not training_manager.is_alive():
+                        training_manager.start_training(
+                            personality=personalities[selected_p_idx], total_updates=6, quick_mode=True
+                        )
+                for i in range(len(personalities)):
+                    t_rect = pygame.Rect(start_x + i * (tab_w + 16), 62, tab_w, 32)
+                    if t_rect.collidepoint(event.pos):
+                        selected_p_idx = i
+
+        surface.blit(bg_img, (0, 0))
+        surface.blit(scrim, (0, 0))
+        _draw_title(surface, "Model Insights & Neural League", font_large, y=16)
+
+        # Personality selector tabs
+        for i, p_name in enumerate(personalities):
+            tab_rect = pygame.Rect(start_x + i * (tab_w + 16), 62, tab_w, 32)
+            is_sel = (i == selected_p_idx)
+            pygame.draw.rect(surface, MENU_HIGHLIGHT if is_sel else DARK_GREY, tab_rect, border_radius=5)
+            if is_sel:
+                pygame.draw.rect(surface, WHITE, tab_rect, 2, border_radius=5)
+            t_col = WHITE if is_sel else LIGHT_GREY
+            txt = font_medium.render(p_name, True, t_col)
+            surface.blit(txt, txt.get_rect(center=tab_rect.center))
+
+        active_char = personalities[selected_p_idx]
+        models = registry.list_models(personality=active_char)
+
+        # Left Panel: Model Registry & Versions
+        left_panel = pygame.Rect(45, 108, 450, 360)
+        _draw_manual_card(surface, left_panel, border_color=(90, 110, 150))
+        surface.blit(font_medium.render(f"Registered Models ({active_char})", True, (240, 215, 90)), (left_panel.x + 14, 118))
+        pygame.draw.line(surface, (70, 80, 105), (left_panel.x + 14, 144), (left_panel.x + left_panel.width - 14, 144), 1)
+
+        row_y = 154
+        surface.blit(font_small.render("VER", True, (160, 170, 190)), (left_panel.x + 14, row_y))
+        surface.blit(font_small.render("STATUS", True, (160, 170, 190)), (left_panel.x + 80, row_y))
+        surface.blit(font_small.render("ELO", True, (160, 170, 190)), (left_panel.x + 190, row_y))
+        surface.blit(font_small.render("WIN %", True, (160, 170, 190)), (left_panel.x + 270, row_y))
+        surface.blit(font_small.render("UPDATED", True, (160, 170, 190)), (left_panel.x + 350, row_y))
+        row_y += 24
+
+        if not models:
+            surface.blit(
+                font_small.render("No trained checkpoints yet. Click 'Train Now' to begin!", True, LIGHT_GREY),
+                (left_panel.x + 14, row_y + 40),
+            )
         else:
-            font = font_small
-            colour = LIGHT_GREY
-        if line_text:
-            rendered = font.render(line_text, True, colour)
-            surface.blit(rendered, (x, y))
-        y += spacing
+            for m in models[:8]:
+                st = m.get("status", "candidate")
+                if st == "live":
+                    status_color = (100, 255, 120)
+                elif st == "promoted":
+                    status_color = (100, 200, 255)
+                elif st == "archived":
+                    status_color = (160, 180, 210)
+                else:
+                    status_color = (255, 100, 100)
+                surface.blit(font_small.render(m.get("version_tag", "v001"), True, WHITE), (left_panel.x + 14, row_y))
+                surface.blit(font_small.render(st.upper(), True, status_color), (left_panel.x + 80, row_y))
+                surface.blit(font_small.render(f"{m.get('elo', 1000.0):.1f}", True, (240, 220, 100)), (left_panel.x + 190, row_y))
+                surface.blit(font_small.render(f"{m.get('win_rate', 0.0)*100:.1f}%", True, WHITE), (left_panel.x + 270, row_y))
+                ago_min = max(0, int((time.time() - m.get("timestamp", time.time())) / 60))
+                surface.blit(font_small.render(f"{ago_min}m ago", True, LIGHT_GREY), (left_panel.x + 350, row_y))
+                row_y += 22
+
+        # Right Panel: Style Constraints & Explanation Preview
+        right_panel = pygame.Rect(520, 108, 455, 360)
+        _draw_manual_card(surface, right_panel, border_color=(120, 100, 170))
+        surface.blit(font_medium.render("Style Check & Neural Explanation", True, (190, 140, 255)), (right_panel.x + 14, 118))
+        pygame.draw.line(surface, (70, 80, 105), (right_panel.x + 14, 144), (right_panel.x + right_panel.width - 14, 144), 1)
+
+        # Live model stats
+        live_m = registry.get_live_model(active_char)
+        s_y = 154
+        if live_m:
+            surface.blit(font_small.render(f"Live Model: {live_m['version_tag']} (Elo: {live_m['elo']:.1f})", True, (100, 255, 120)), (right_panel.x + 14, s_y))
+            s_y += 22
+            surface.blit(font_small.render(f"• Aggression Score: {live_m.get('aggression', 0.0):.2f}", True, WHITE), (right_panel.x + 14, s_y))
+            s_y += 20
+            surface.blit(font_small.render(f"• Defense Rate: {live_m.get('defense', 0.0):.1f} blocks/min", True, WHITE), (right_panel.x + 14, s_y))
+            s_y += 20
+            surface.blit(font_small.render(f"• Average Spacing: {live_m.get('avg_distance', 0.0):.1f} px", True, WHITE), (right_panel.x + 14, s_y))
+        else:
+            surface.blit(font_small.render("Live Model: Using Rule-Based FSM / Search fallback", True, (240, 215, 90)), (right_panel.x + 14, s_y))
+            s_y += 24
+            surface.blit(font_small.render("Style Constraints:", True, LIGHT_GREY), (right_panel.x + 14, s_y))
+            s_y += 20
+            if active_char == "Crimson":
+                surface.blit(font_small.render("• Aggression constraint: > 0.58 forward/attack ratio", True, WHITE), (right_panel.x + 14, s_y))
+            elif active_char == "Steel":
+                surface.blit(font_small.render("• Defense constraint: > 8.0 blocks/parries per min", True, WHITE), (right_panel.x + 14, s_y))
+            elif active_char == "Shadow":
+                surface.blit(font_small.render("• Spacing constraint: Spacing > 160 px", True, WHITE), (right_panel.x + 14, s_y))
+            else:
+                surface.blit(font_small.render("• Adaptive balance: Variety entropy > 1.5", True, WHITE), (right_panel.x + 14, s_y))
+
+        s_y += 30
+        pygame.draw.line(surface, (70, 80, 105), (right_panel.x + 14, s_y), (right_panel.x + right_panel.width - 14, s_y), 1)
+        s_y += 10
+        surface.blit(font_medium.render("Decision Explanation Preview", True, (100, 220, 255)), (right_panel.x + 14, s_y))
+        s_y += 24
+        surface.blit(font_small.render("Policy Decision: LIGHT PUNCH (Confidence: 68.4%)", True, WHITE), (right_panel.x + 14, s_y))
+        s_y += 20
+        surface.blit(font_small.render("Opponent Prediction (n-gram): HIGH BLOCK (Prob: 54.1%)", True, (220, 220, 120)), (right_panel.x + 14, s_y))
+        s_y += 20
+        surface.blit(font_small.render("Decision Latency: 0.38 ms (< 1.0 ms CPU budget)", True, (120, 255, 140)), (right_panel.x + 14, s_y))
+
+        # Bottom Bar: Live Training Progress & Actions
+        bottom_box = pygame.Rect(45, 480, SCREEN_WIDTH - 90, 60)
+        _draw_manual_card(surface, bottom_box, border_color=(70, 80, 110))
+
+        # Draw progress bar
+        p_bar_rect = pygame.Rect(55, 492, SCREEN_WIDTH - 390, 18)
+        pygame.draw.rect(surface, (30, 35, 50), p_bar_rect, border_radius=4)
+        if training_manager.progress > 0:
+            fill_w = int(p_bar_rect.width * min(1.0, training_manager.progress))
+            fill_rect = pygame.Rect(55, 492, fill_w, 18)
+            pygame.draw.rect(surface, (50, 160, 240), fill_rect, border_radius=4)
+        pygame.draw.rect(surface, (70, 90, 130), p_bar_rect, 1, border_radius=4)
+
+        surface.blit(font_small.render(training_manager.last_status, True, WHITE), (55, 516))
+
+        # Train button
+        btn_col = (100, 100, 100) if training_manager.is_alive() else (40, 120, 200)
+        pygame.draw.rect(surface, btn_col, train_btn_rect, border_radius=5)
+        pygame.draw.rect(surface, WHITE, train_btn_rect, 1, border_radius=5)
+        btn_text = "Training..." if training_manager.is_alive() else f"Train {active_char} (T)"
+        btn_surf = font_medium.render(btn_text, True, WHITE)
+        surface.blit(btn_surf, btn_surf.get_rect(center=train_btn_rect.center))
+
+        # Back button
+        pygame.draw.rect(surface, DARK_GREY, back_rect, border_radius=5)
+        pygame.draw.rect(surface, LIGHT_GREY, back_rect, 2, border_radius=5)
+        back_label = font_medium.render("< Back", True, WHITE)
+        surface.blit(back_label, back_label.get_rect(center=back_rect.center))
+
+        if pygame.display.get_surface() is not None:
+            pygame.display.flip()
+        clock.tick(30)

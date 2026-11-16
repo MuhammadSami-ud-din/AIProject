@@ -1,0 +1,61 @@
+{
+  "personality": "Steel",
+  "seed": 42,
+  "git_commit": "2daebbc",
+  "history": [
+    {
+      "update": 1,
+      "total_steps": 512,
+      "mean_reward": -0.3143066465854645,
+      "policy_loss": -0.023853368766140193,
+      "value_loss": 11.057788461446762,
+      "entropy": 2.1116897985339165,
+      "elapsed_time": 1.1909852027893066
+    },
+    {
+      "update": 2,
+      "total_steps": 1024,
+      "mean_reward": -0.2289745956659317,
+      "policy_loss": -0.01671821909258142,
+      "value_loss": 5.178350657224655,
+      "entropy": 2.2573822252452374,
+      "elapsed_time": 0.9608638286590576
+    },
+    {
+      "update": 3,
+      "total_steps": 1536,
+      "mean_reward": -0.22395506501197815,
+      "policy_loss": -0.01612985332030803,
+      "value_loss": 4.397827610373497,
+      "entropy": 2.175772998481989,
+      "elapsed_time": 0.9764959812164307
+    },
+    {
+      "update": 4,
+      "total_steps": 2048,
+      "mean_reward": -0.16472654044628143,
+      "policy_loss": -0.02185872074915096,
+      "value_loss": 2.1887487173080444,
+      "entropy": 2.134164422750473,
+      "elapsed_time": 1.0838119983673096
+    },
+    {
+      "update": 5,
+      "total_steps": 2560,
+      "mean_reward": -0.13059569895267487,
+      "policy_loss": -0.01990333729190752,
+      "value_loss": 1.1350861079990864,
+      "entropy": 2.0317511297762394,
+      "elapsed_time": 0.9468398094177246
+    },
+    {
+      "update": 6,
+      "total_steps": 3072,
+      "mean_reward": -0.08271484076976776,
+      "policy_loss": -0.015248229436110705,
+      "value_loss": 0.31963664293289185,
+      "entropy": 1.8416936956346035,
+      "elapsed_time": 0.8596451282501221
+    }
+  ]
+}

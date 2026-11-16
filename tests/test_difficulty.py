@@ -5,10 +5,14 @@ import pytest
 from backend.ai.actions import Action, ALL_ACTIONS
 from backend.ai.crimson import CrimsonAgent
 from backend.ai.difficulty import (
+    DIFFICULTY_PROFILES,
+    DifficultyProfile,
     DifficultyWrapper,
     MISTAKE_CHANCE,
     REACTION_DELAY,
     SEARCH_DEPTH,
+    adrenaline_level,
+    effective_profile,
 )
 from backend.ai.evaluation import evaluate
 from backend.ai.golden import GoldenAgent
@@ -44,14 +48,14 @@ def test_all_difficulty_levels_work():
 def test_reaction_delay_values():
     assert REACTION_DELAY["LOW"] == 24
     assert REACTION_DELAY["MEDIUM"] == 15
-    assert REACTION_DELAY["HIGH"] == 7
-    assert REACTION_DELAY["HELL"] == 1
+    assert REACTION_DELAY["HIGH"] == 8
+    assert REACTION_DELAY["HELL"] == 2
 
 
 def test_mistake_chance_values():
-    assert MISTAKE_CHANCE["LOW"] == 0.30
-    assert MISTAKE_CHANCE["MEDIUM"] == 0.15
-    assert MISTAKE_CHANCE["HIGH"] == 0.05
+    assert MISTAKE_CHANCE["LOW"] == 0.35
+    assert MISTAKE_CHANCE["MEDIUM"] == 0.18
+    assert MISTAKE_CHANCE["HIGH"] == 0.07
     assert MISTAKE_CHANCE["HELL"] == 0.01
 
 
@@ -60,6 +64,76 @@ def test_search_depth_values():
     assert SEARCH_DEPTH["MEDIUM"] == 2
     assert SEARCH_DEPTH["HIGH"] == 3
     assert SEARCH_DEPTH["HELL"] == 4
+
+
+def test_difficulty_profile_table_values():
+    """Verify the frozen DifficultyProfile table contains all Step 2 settings."""
+    low = DIFFICULTY_PROFILES["LOW"]
+    med = DIFFICULTY_PROFILES["MEDIUM"]
+    high = DIFFICULTY_PROFILES["HIGH"]
+    hell = DIFFICULTY_PROFILES["HELL"]
+
+    assert (low.decides_every_n_frames, med.decides_every_n_frames, high.decides_every_n_frames, hell.decides_every_n_frames) == (12, 8, 4, 2)
+    assert (low.block_chance, med.block_chance, high.block_chance, hell.block_chance) == (0.15, 0.40, 0.70, 0.90)
+    assert (low.punish_chance, med.punish_chance, high.punish_chance, hell.punish_chance) == (0.05, 0.30, 0.70, 0.95)
+    assert (low.combo_completion, med.combo_completion, high.combo_completion, hell.combo_completion) == (0.30, 0.60, 0.85, 0.98)
+    assert (low.anti_air_chance, med.anti_air_chance, high.anti_air_chance, hell.anti_air_chance) == (0.10, 0.40, 0.75, 0.95)
+    assert (low.hesitation, med.hesitation, high.hesitation, hell.hesitation) == (0.25, 0.12, 0.04, 0.00)
+    assert (low.whiff_rate, med.whiff_rate, high.whiff_rate, hell.whiff_rate) == (0.30, 0.15, 0.05, 0.01)
+    assert (low.opponent_model, med.opponent_model, high.opponent_model, hell.opponent_model) == ("off", "counts", "bayes", "live")
+
+
+def test_adrenaline_sharpening_as_health_drops():
+    """Reaction delay and mistake chance go down as health drops (GREEN -> YELLOW -> RED)."""
+    for mode in ("LOW", "MEDIUM", "HIGH", "HELL"):
+        green = effective_profile(mode, 0.85)
+        yellow = effective_profile(mode, 0.40)
+        red = effective_profile(mode, 0.10)
+
+        assert adrenaline_level(0.85) == "GREEN"
+        assert adrenaline_level(0.40) == "YELLOW"
+        assert adrenaline_level(0.10) == "RED"
+
+        assert green.reaction_delay >= yellow.reaction_delay >= red.reaction_delay
+        assert green.mistake_chance >= yellow.mistake_chance >= red.mistake_chance
+        assert green.block_chance <= yellow.block_chance <= red.block_chance
+        assert green.punish_chance <= yellow.punish_chance <= red.punish_chance
+
+    # HELL in RED goes down to 1-frame reaction
+    assert effective_profile("HELL", 0.10).reaction_delay == 1
+
+
+def test_adrenaline_never_breaks_next_mode_green_limit():
+    """A mode in RED never becomes better than the NEXT mode's GREEN values."""
+    pairs = [("LOW", "MEDIUM"), ("MEDIUM", "HIGH"), ("HIGH", "HELL")]
+    for lower_mode, next_mode in pairs:
+        for h_int in range(0, 101):
+            h = h_int / 100.0
+            lower_eff = effective_profile(lower_mode, h)
+            next_green = effective_profile(next_mode, 1.0)
+
+            assert lower_eff.reaction_delay >= next_green.reaction_delay
+            assert lower_eff.mistake_chance >= next_green.mistake_chance
+            assert lower_eff.decides_every_n_frames >= next_green.decides_every_n_frames
+            assert lower_eff.block_chance <= next_green.block_chance
+            assert lower_eff.punish_chance <= next_green.punish_chance
+            assert lower_eff.anti_air_chance <= next_green.anti_air_chance
+            assert lower_eff.hesitation >= next_green.hesitation
+
+
+def test_adrenaline_is_deterministic_and_smooth():
+    """Same health always produces identical profile values; 5% transition is smooth."""
+    for mode in ("LOW", "MEDIUM", "HIGH", "HELL"):
+        for h in (0.90, 0.58, 0.42, 0.22, 0.12):
+            p1 = effective_profile(mode, h)
+            p2 = effective_profile(mode, h)
+            assert p1 == p2
+
+    # Midpoint of 5% transition band (0.575 is halfway between 0.60 and 0.55)
+    high_g = effective_profile("HIGH", 0.60)
+    high_mid = effective_profile("HIGH", 0.575)
+    high_y = effective_profile("HIGH", 0.55)
+    assert high_g.mistake_chance > high_mid.mistake_chance > high_y.mistake_chance
 
 
 def test_bad_difficulty_rejected():

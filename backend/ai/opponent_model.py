@@ -62,6 +62,10 @@ class OpponentModel:
         self.frames_seen = 0
         self.reset()
 
+    def observe(self, obs, enemy_action, my_action=None):
+        """Alias for update() to support generic observation interfaces."""
+        return self.update(obs, enemy_action)
+
     def update(self, obs, enemy_action):
         """Called after every frame with the enemy's actual action.
 
@@ -121,6 +125,18 @@ class OpponentModel:
         # Store the most likely action as our prediction
         self.last_prediction = max(probs, key=probs.get)
 
+        return probs
+
+    def predict_distribution(self, obs, temperature: float = 1.0):
+        """Return softmax probability distribution over actions with temperature scaling."""
+        probs = self.predict(obs)
+        if temperature > 0 and temperature != 1.0:
+            import math
+            logits = {a: math.log(max(1e-7, p)) / temperature for a, p in probs.items()}
+            max_l = max(logits.values())
+            exps = {a: math.exp(l - max_l) for a, l in logits.items()}
+            sum_e = sum(exps.values())
+            return {a: e / sum_e for a, e in exps.items()}
         return probs
 
     @property

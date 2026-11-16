@@ -21,6 +21,7 @@ from frontend.screens import (
     main_menu,
     manual_screen,
     match_type_select,
+    model_insights_screen,
     mode_select,
     player_name_prompt,
     results_screen,
@@ -72,6 +73,9 @@ def main():
         elif choice == "manual":
             manual_screen(surface, clock)
 
+        elif choice == "insights":
+            model_insights_screen(surface, clock)
+
         elif choice == "start":
             _start_match(surface, clock, settings, player_id=player_id)
 
@@ -97,11 +101,15 @@ def _start_match(surface, clock, settings, player_id=None):
             p1_char = character_select(surface, clock, is_p2=False)
             if p1_char is None:
                 continue
+            if p1_char == "Random":
+                p1_char = random.choice(["Crimson", "Steel", "Shadow", "Golden"])
 
             # Step 3: Choose AI opponent character (P2)
             p2_char = character_select(surface, clock, is_p2=True)
             if p2_char is None:
                 continue
+            if p2_char == "Random":
+                p2_char = random.choice(["Crimson", "Steel", "Shadow", "Golden"])
 
             # Step 4: Choose difficulty
             difficulty = difficulty_select(surface, clock)
@@ -114,7 +122,12 @@ def _start_match(surface, clock, settings, player_id=None):
 
                 class HumanAgent(Agent):
                     def __init__(self, name="Player", player=1, character="Golden"):
-                        super().__init__(name=name, player=player, difficulty="LOW")
+                        super().__init__(
+                            name=name,
+                            player=player,
+                            difficulty="LOW",
+                            personality=ALL_PERSONALITIES.get(character),
+                        )
                         self.character_name = character
 
                     def choose_action(self, state):
@@ -168,6 +181,8 @@ def _start_match(surface, clock, settings, player_id=None):
             p1_char = character_select(surface, clock, is_p2=False)
             if p1_char is None:
                 continue
+            if p1_char == "Random":
+                p1_char = random.choice(["Crimson", "Steel", "Shadow", "Golden"])
 
             # Opponent is chosen RANDOMLY with respect to Random AI mode
             all_chars = ["Crimson", "Steel", "Shadow", "Golden"]
@@ -184,7 +199,12 @@ def _start_match(surface, clock, settings, player_id=None):
 
                 class HumanAgent(Agent):
                     def __init__(self, name="Player", player=1, character="Golden"):
-                        super().__init__(name=name, player=player, difficulty="LOW")
+                        super().__init__(
+                            name=name,
+                            player=player,
+                            difficulty="LOW",
+                            personality=ALL_PERSONALITIES.get(character),
+                        )
                         self.character_name = character
 
                     def choose_action(self, state):
@@ -238,10 +258,14 @@ def _start_match(surface, clock, settings, player_id=None):
             p1_char = character_select(surface, clock, is_p2=False)
             if p1_char is None:
                 continue
+            if p1_char == "Random":
+                p1_char = random.choice(["Crimson", "Steel", "Shadow", "Golden"])
 
             p2_char = character_select(surface, clock, is_p2=True)
             if p2_char is None:
                 continue
+            if p2_char == "Random":
+                p2_char = random.choice(["Crimson", "Steel", "Shadow", "Golden"])
 
             difficulty = difficulty_select(surface, clock)
             if difficulty is None:
@@ -298,9 +322,13 @@ def _ai_fight(surface, clock, settings):
         name1 = character_select(surface, clock, is_p2=False)
         if name1 is None:
             return
+        if name1 == "Random":
+            name1 = random.choice(["Crimson", "Steel", "Shadow", "Golden"])
         name2 = character_select(surface, clock, is_p2=True)
         if name2 is None:
             return
+        if name2 == "Random":
+            name2 = random.choice(["Crimson", "Steel", "Shadow", "Golden"])
 
         # Directly pick difficulty (NO match type / vs ai prompt!)
         difficulty = difficulty_select(surface, clock)
@@ -335,35 +363,41 @@ def _ai_fight(surface, clock, settings):
                 results_db.save_match(abandoned_ai)
                 return
 
-            stats = {
-                "p1_name": agent1.name,
-                "p2_name": agent2.name,
-                "p1_character": name1,
-                "p2_character": name2,
-                "p1_kind": "ai",
-                "p2_kind": "ai",
-                "p1_difficulty": difficulty,
-                "p2_difficulty": difficulty,
-                "arena": "Sky Colosseum" if difficulty == "HELL" else "Neon Rooftop",
-                "damage_dealt_p1": 1.0 if res == "p1" else 0.5,
-                "damage_dealt_p2": 1.0 if res == "p2" else 0.5,
-                "hits_landed_p1": 6 if res == "p1" else 3,
-                "hits_landed_p2": 6 if res == "p2" else 3,
-                "blocks_p1": 2,
-                "blocks_p2": 2,
-                "longest_combo_p1": 2,
-                "longest_combo_p2": 2,
-                "winner_side": 1 if res == "p1" else (2 if res == "p2" else 0),
-                "rounds_p1": 2 if res == "p1" else 0,
-                "rounds_p2": 2 if res == "p2" else 0,
-                "duration_s": 25.0,
-                "status": "finished",
-                "mode": "AI vs AI",
-                "match_result": res,
-                "rounds_history": [
-                    {"round_number": 1, "winner_side": 1 if res == "p1" else 2, "ended_by": "KO", "duration_s": 12.0, "p1_health_left": 0.35 if res == "p1" else 0.0, "p2_health_left": 0.35 if res == "p2" else 0.0},
-                    {"round_number": 2, "winner_side": 1 if res == "p1" else 2, "ended_by": "KO", "duration_s": 13.0, "p1_health_left": 0.50 if res == "p1" else 0.0, "p2_health_left": 0.50 if res == "p2" else 0.0},
-                ],
+            if isinstance(res, dict):
+                stats = res
+                stats["mode"] = "AI vs AI"
+                stats["p1_difficulty"] = difficulty
+                stats["p2_difficulty"] = difficulty
+            else:
+                stats = {
+                    "p1_name": agent1.name,
+                    "p2_name": agent2.name,
+                    "p1_character": name1,
+                    "p2_character": name2,
+                    "p1_kind": "ai",
+                    "p2_kind": "ai",
+                    "p1_difficulty": difficulty,
+                    "p2_difficulty": difficulty,
+                    "arena": "Sky Colosseum" if difficulty == "HELL" else "Neon Rooftop",
+                    "damage_dealt_p1": 1.0 if res == "p1" else 0.5,
+                    "damage_dealt_p2": 1.0 if res == "p2" else 0.5,
+                    "hits_landed_p1": 6 if res == "p1" else 3,
+                    "hits_landed_p2": 6 if res == "p2" else 3,
+                    "blocks_p1": 2,
+                    "blocks_p2": 2,
+                    "longest_combo_p1": 2,
+                    "longest_combo_p2": 2,
+                    "winner_side": 1 if res == "p1" else (2 if res == "p2" else 0),
+                    "rounds_p1": 2 if res == "p1" else 0,
+                    "rounds_p2": 2 if res == "p2" else 0,
+                    "duration_s": 25.0,
+                    "status": "finished",
+                    "mode": "AI vs AI",
+                    "match_result": res,
+                    "rounds_history": [
+                        {"round_number": 1, "winner_side": 1 if res == "p1" else 2, "ended_by": "KO", "duration_s": 12.0, "p1_health_left": 0.35 if res == "p1" else 0.0, "p2_health_left": 0.35 if res == "p2" else 0.0},
+                        {"round_number": 2, "winner_side": 1 if res == "p1" else 2, "ended_by": "KO", "duration_s": 13.0, "p1_health_left": 0.50 if res == "p1" else 0.0, "p2_health_left": 0.50 if res == "p2" else 0.0},
+                    ],
             }
 
             results_db.save_match(stats)
@@ -404,7 +438,9 @@ def _make_agent(name, player, difficulty="LOW", seed=None):
 
     cls = agent_classes.get(name)
     if cls:
-        return cls(player=player, difficulty=difficulty, seed=seed)
+        from backend.ai.difficulty import DifficultyWrapper
+        inner = cls(player=player, difficulty=difficulty, seed=seed)
+        return DifficultyWrapper(inner, difficulty=difficulty)
 
     # Fallback to random
     return RandomAgent(player=player, seed=seed)

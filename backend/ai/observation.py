@@ -203,8 +203,13 @@ class Observation:
     # ---------------------------------------------------------------
     @property
     def can_act(self):
-        """False while I am stuck after my own attack."""
-        return self.my_recovery == 0
+        """False while I am stuck after my own attack, in stun, or knocked down."""
+        return (
+            self.my_recovery == 0
+            and self.my_hitstun == 0
+            and self.my_blockstun == 0
+            and not self.my_is_knocked_down
+        )
 
     @property
     def can_attack(self):

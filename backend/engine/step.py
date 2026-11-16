@@ -137,6 +137,8 @@ def _tick_timers(fighter: FighterState, action: Action) -> None:
         fighter.invulnerable_frames -= 1
     if fighter.guard_break_stun > 0:
         fighter.guard_break_stun -= 1
+    if fighter.read_frames_left > 0:
+        fighter.read_frames_left -= 1
 
     # Track how long block has been held (for 4-frame perfect parry)
     if action in (Action.BLOCK, Action.BLOCK_LOW):
@@ -198,9 +200,14 @@ def _handle_burst(victim: FighterState, attacker: FighterState, action: Action) 
 def _handle_special_movement(fighter: FighterState, enemy: FighterState, action: Action) -> None:
     """Handle special repositioning moves like Shadow Step."""
     if fighter.character_name == "Shadow" and action == Action.SPECIAL_FORWARD and can_act(fighter):
-        # Teleport to other side of enemy
         direction = 1 if enemy.x >= fighter.x else -1
-        fighter.x = max(20.0, min(ARENA_WIDTH - 20.0, enemy.x + direction * 55.0))
+        dist = abs(enemy.x - fighter.x)
+        if dist <= 140.0:
+            # Close-range slip behind opponent
+            fighter.x = max(20.0, min(ARENA_WIDTH - 20.0, enemy.x + direction * 55.0))
+        else:
+            # Bounded forward step when far (no full-screen teleporting)
+            fighter.x = max(20.0, min(ARENA_WIDTH - 20.0, fighter.x + direction * 75.0))
         fighter.invulnerable_frames = 6
 
 
@@ -286,6 +293,11 @@ def _update_projectiles(state: FightState, stats1, stats2) -> None:
             else:
                 apply_damage(target, p.damage, is_blocking=False, blocked_damage_ratio=1.0)
                 target.hitstun = max(target.hitstun, 16)
+                target.attack_phase = "none"
+                target.attack_frames_left = 0
+                target.recovery = 0
+                target.current_action = Action.IDLE
+                target.cancel_available = False
                 attacker.meter = min(100.0, attacker.meter + 8.0)
                 target.meter = min(100.0, target.meter + 3.0)
             continue  # Consumed
@@ -429,6 +441,11 @@ def _apply_hit_effect(attacker: FighterState, defender: FighterState,
             base_stun = int(move.hitstun * 1.5) if is_counter else move.hitstun
             decayed_hitstun = max(4, base_stun - attacker.combo_hits * 2)
             defender.hitstun = max(defender.hitstun, decayed_hitstun)
+            defender.attack_phase = "none"
+            defender.attack_frames_left = 0
+            defender.recovery = 0
+            defender.current_action = Action.IDLE
+            defender.cancel_available = False
 
         # Meter gain
         bonus_meter = 5.0 if is_counter else 0.0

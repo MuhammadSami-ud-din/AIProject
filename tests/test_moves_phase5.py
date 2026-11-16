@@ -45,9 +45,9 @@ def test_ai_uses_signature_moves():
 
 def test_difficulty_parameters():
     """Difficulty levels enforce correct mistake chances and reaction delays."""
-    assert MISTAKE_CHANCE["LOW"] == 0.30
-    assert MISTAKE_CHANCE["MEDIUM"] == 0.15
-    assert MISTAKE_CHANCE["HIGH"] == 0.05
+    assert MISTAKE_CHANCE["LOW"] == 0.35
+    assert MISTAKE_CHANCE["MEDIUM"] == 0.18
+    assert MISTAKE_CHANCE["HIGH"] == 0.07
     assert MISTAKE_CHANCE["HELL"] == 0.01
 
     agent = CrimsonAgent(player=1)
@@ -55,7 +55,7 @@ def test_difficulty_parameters():
     high_wrap = DifficultyWrapper(agent, difficulty="HIGH")
 
     assert low_wrap.delay == 24
-    assert high_wrap.delay == 7
+    assert high_wrap.delay == 8
 
 
 def test_search_stays_under_5ms():

@@ -3,10 +3,12 @@ name = "aiproject"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "gymnasium>=1.4.0",
     "matplotlib>=3.11.2",
     "pygame-ce>=2.5.8",
     "pytest>=9.2.0",
     "scikit-learn>=1.9.1",
+    "torch>=2.15.0",
 ]
 
 [build-system]

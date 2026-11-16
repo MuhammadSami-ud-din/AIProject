@@ -64,34 +64,48 @@ class SteelAgent(Agent):
                     score = 0.5
 
             elif action in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB):
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 if obs.enemy_is_stuck and obs.i_can_hit:
-                    score = 10.0  # the block-punish!
+                    base = 10.0  # the block-punish!
                 elif obs.enemy_is_open and obs.i_can_hit:
-                    score = 8.5
+                    base = 8.5
                 elif obs.i_can_hit:
-                    score = 7.5
+                    base = 7.5
                 else:
-                    score = 0.3
+                    base = 0.3
+                if action == Action.LIGHT:
+                    score = base
+                elif action == Action.LIGHT_KICK:
+                    score = base * 0.90
+                else:
+                    score = base * 0.84
 
             elif action in (Action.HEAVY, Action.HEAVY_KICK, Action.LOW_SWEEP, Action.OVERHEAD):
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 if obs.enemy_is_stuck and obs.i_can_hit:
-                    score = 9.5  # big punish!
+                    base = 9.5  # big punish!
                 elif obs.i_can_hit:
-                    score = 6.5
+                    base = 6.5
                 else:
-                    score = 0.2
+                    base = 0.2
+                if action == Action.HEAVY:
+                    score = base
+                elif action == Action.HEAVY_KICK:
+                    score = base * 0.88
+                elif action == Action.LOW_SWEEP:
+                    score = base * 0.82
+                else:
+                    score = base * 0.78
 
             elif action == Action.ANTI_AIR:
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 score = 8.0 if obs.enemy_in_air and obs.i_can_hit else 0.2
 
             elif action == Action.THROW:
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 score = 7.0 if obs.distance <= 40 and obs.enemy_is_blocking else 0.2
 
@@ -99,13 +113,20 @@ class SteelAgent(Agent):
                 if obs.my_in_air:
                     score = 0.0
                 elif obs.enemy_can_hit and obs.enemy_is_attacking:
-                    score = 8.0  # block incoming hit!
+                    score = 8.0 if action == Action.BLOCK else 7.2
                 elif obs.enemy_can_hit:
-                    score = 5.0  # be ready to block
+                    score = 5.0 if action == Action.BLOCK else 4.2
                 else:
-                    score = 1.0
+                    score = 1.0 if action == Action.BLOCK else 0.7
 
-            elif action in (Action.CROUCH, Action.CROUCH_KICK, Action.JUMP_PUNCH, Action.JUMP_KICK):
+            elif action in (Action.JUMP_PUNCH, Action.JUMP_KICK):
+                if not obs.my_in_air or not obs.can_attack:
+                    continue
+                score = 7.5 if obs.distance <= 90 else 1.0
+
+            elif action in (Action.CROUCH, Action.CROUCH_KICK):
+                if obs.my_in_air or (action == Action.CROUCH_KICK and not obs.can_attack):
+                    continue
                 score = 1.0 if obs.i_can_hit else 0.2
 
             # --- Steel Signature Moves (Phase 4 & 5) ---
@@ -116,10 +137,14 @@ class SteelAgent(Agent):
                     score = 0.0
 
             elif action == Action.SPECIAL_DOWN:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Iron Wall counter stance: triggers against incoming attacks
                 score = 8.5 if (obs.enemy_can_hit and obs.enemy_is_attacking and obs.enemy_recovery == 0) else 0.2
 
             elif action == Action.SPECIAL_FORWARD:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Shield Bash: escape the corner or heavy pushback (costs 25 meter)
                 if obs.my_meter >= 25.0 and obs.distance <= 80:
                     score = 9.8 if obs.i_am_cornered else 6.0
@@ -127,6 +152,8 @@ class SteelAgent(Agent):
                     score = 0.2
 
             elif action == Action.SPECIAL_NEUTRAL:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Punisher Grip: slow command grab that beats blocking
                 if obs.distance <= 52:
                     score = 9.5 if obs.enemy_is_blocking else 3.0
@@ -134,10 +161,14 @@ class SteelAgent(Agent):
                     score = 0.2
 
             elif action == Action.SPECIAL_BACK:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Reflector: reflects projectiles
                 score = 9.5 if obs.enemy_last_action == Action.SPECIAL_NEUTRAL else 0.1
 
             elif action == Action.SUPER:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Fortress Crush: counter super stance
                 super_cost = 60.0 if obs.my_health < 0.25 else 100.0
                 if obs.my_meter >= super_cost and obs.enemy_can_hit and obs.enemy_is_attacking:

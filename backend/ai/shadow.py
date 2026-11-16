@@ -77,39 +77,53 @@ class ShadowAgent(Agent):
                     score = 0.5
 
             elif action in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB):
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 if obs.is_safe_poke:
-                    score = 10.0
+                    base = 10.0
                 elif obs.i_can_hit and obs.enemy_is_stuck:
-                    score = 10.0
+                    base = 10.0
                 elif obs.i_can_hit:
-                    score = 9.0
+                    base = 9.0
                 elif obs.enemy_is_open and zone == Zone.MID:
-                    score = 4.0
+                    base = 4.0
                 else:
-                    score = 0.5
+                    base = 0.5
+                if action == Action.LIGHT:
+                    score = base
+                elif action == Action.LIGHT_KICK:
+                    score = base * 0.90
+                else:
+                    score = base * 0.84
 
             elif action in (Action.HEAVY, Action.HEAVY_KICK, Action.OVERHEAD, Action.LOW_SWEEP):
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 can_hit_heavy = (obs.distance <= 115)
                 if obs.enemy_is_stuck and can_hit_heavy:
-                    score = 9.5
+                    base = 9.5
                 elif can_hit_heavy and obs.enemy_is_open:
-                    score = 8.5
+                    base = 8.5
                 elif can_hit_heavy:
-                    score = 7.0
+                    base = 7.0
                 else:
-                    score = 0.2
+                    base = 0.2
+                if action == Action.HEAVY:
+                    score = base
+                elif action == Action.HEAVY_KICK:
+                    score = base * 0.88
+                elif action == Action.LOW_SWEEP:
+                    score = base * 0.82
+                else:
+                    score = base * 0.78
 
             elif action == Action.ANTI_AIR:
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 score = 8.5 if obs.enemy_in_air and obs.i_can_hit else 0.2
 
             elif action == Action.THROW:
-                if not obs.can_attack:
+                if not obs.can_attack or obs.my_in_air:
                     continue
                 score = 6.0 if obs.distance <= 40 and obs.enemy_is_blocking else 0.2
 
@@ -117,11 +131,18 @@ class ShadowAgent(Agent):
                 if obs.my_in_air:
                     score = 0.0
                 elif obs.enemy_can_hit and obs.enemy_is_attacking:
-                    score = 7.0
+                    score = 7.0 if action == Action.BLOCK else 6.2
                 else:
-                    score = 0.5
+                    score = 0.5 if action == Action.BLOCK else 0.3
 
-            elif action in (Action.CROUCH, Action.CROUCH_KICK, Action.JUMP_PUNCH, Action.JUMP_KICK):
+            elif action in (Action.JUMP_PUNCH, Action.JUMP_KICK):
+                if not obs.my_in_air or not obs.can_attack:
+                    continue
+                score = 8.5 if obs.distance <= 95 else 1.0
+
+            elif action in (Action.CROUCH, Action.CROUCH_KICK):
+                if obs.my_in_air or (action == Action.CROUCH_KICK and not obs.can_attack):
+                    continue
                 score = 1.0 if obs.i_can_hit else 0.3
 
             # --- Shadow Signature Moves (Phase 4 & 5) ---
@@ -132,30 +153,40 @@ class ShadowAgent(Agent):
                     score = 0.0
 
             elif action == Action.SPECIAL_NEUTRAL:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Energy Dart: projectile zoner
-                score = 9.5 if zone in (Zone.FAR, Zone.MID) and obs.can_attack else 2.0
+                score = 9.5 if zone in (Zone.FAR, Zone.MID) else 2.0
 
             elif action == Action.SPECIAL_FORWARD:
-                # Shadow Step: teleport behind enemy (great for escaping corners)
-                if obs.i_am_cornered:
-                    score = 10.0
+                if not obs.can_attack or obs.my_in_air:
+                    continue
+                # Shadow Step: close-range cross-up / corner escape
+                if obs.i_am_cornered and obs.distance <= 130:
+                    score = 9.5
                 elif zone == Zone.CLOSE and obs.enemy_is_attacking:
-                    score = 9.0
+                    score = 8.5
                 else:
-                    score = 2.0
+                    score = 0.8
 
             elif action == Action.SPECIAL_DOWN:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Phantom Kick: low string mixup
-                score = 8.5 if obs.distance <= 85 and obs.can_attack else 0.5
+                score = 8.5 if obs.distance <= 85 else 0.5
 
             elif action == Action.SPECIAL_BACK:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Feint Strike: bait and reposition
                 score = 7.0 if zone == Zone.CLOSE else 0.5
 
             elif action == Action.SUPER:
+                if not obs.can_attack or obs.my_in_air:
+                    continue
                 # Vanishing Arts: teleport combo super
                 super_cost = 60.0 if obs.my_health < 0.25 else 100.0
-                if obs.my_meter >= super_cost and obs.distance <= 180 and obs.can_attack:
+                if obs.my_meter >= super_cost and obs.distance <= 180:
                     score = 10.5 if obs.enemy_is_stuck or obs.enemy_hitstun > 0 else 7.0
                 else:
                     score = 0.0
