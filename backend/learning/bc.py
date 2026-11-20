@@ -25,6 +25,7 @@ from backend.ai.random_agent import RandomAgent
 from backend.data.database import get_connection
 from backend.engine.step import make_initial_state, step
 from backend.learning.config import (
+    ACTION_DIM,
     BC_BATCH_SIZE,
     BC_EPOCHS,
     BC_LEARNING_RATE,
@@ -190,7 +191,7 @@ def train_bc_model(
         train_dataset, batch_size=batch_size, shuffle=True
     )
 
-    model = ActorCritic(obs_dim=X_train.shape[1], action_dim=len(ALL_ACTIONS))
+    model = ActorCritic(obs_dim=X_train.shape[1], action_dim=ACTION_DIM)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -199,7 +200,8 @@ def train_bc_model(
         for bx, by in train_loader:
             optimizer.zero_grad()
             logits, _ = model(bx)
-            loss = criterion(logits, by)
+            by_clamped = torch.clamp(by, 0, ACTION_DIM - 1)
+            loss = criterion(logits, by_clamped)
             loss.backward()
             optimizer.step()
 
@@ -213,7 +215,7 @@ def train_bc_model(
         accuracy = float(correct / max(1, len(y_test)))
 
     # Compute confusion matrix
-    num_classes = len(ALL_ACTIONS)
+    num_classes = ACTION_DIM
     conf_matrix = np.zeros((num_classes, num_classes), dtype=int)
     for p, t in zip(predictions, y_test):
         if 0 <= p < num_classes and 0 <= t < num_classes:

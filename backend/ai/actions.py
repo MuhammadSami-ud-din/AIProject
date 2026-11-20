@@ -40,6 +40,14 @@ class Action(Enum):
     SUPER = 25
     BURST = 26
 
+    # Arena Rumble Actions (Phases 2 & 6)
+    BUILD = 27
+    PICKUP = 28
+
+    # Shield Wall Actions (Step 1)
+    SHIELD_FRONT = 29
+    SHIELD_BACK = 30
+
     # Aliases
     JAB = 4
     HEAVY_PUNCH = 5

@@ -1,34 +1,45 @@
-"""AI Model Fight Viewer: watch two AIs fight with full thinking display.
+"""AI Model Fight Viewer: high-end fighting game telemetry dashboard and live match viewer.
 
-Shows each fighter's top move choices with confidence bars,
-evaluation contributions, opponent model prediction indicator,
-and a toggleable F3 profiling overlay. Speed is adjustable.
-Features rich arena backgrounds, projectile visuals, combat popups,
-hit sparks, screen shake, damage trails, and real match statistics.
+Features:
+  - Collapsible bottom telemetry panel (Tab toggles FULL 180px vs COLLAPSED 32px bar).
+  - Dark glass background (80% opacity, rounded top corners, 1px cyan top border).
+  - Two fighter telemetry columns:
+    * Framed portrait + name + archetype + difficulty badge.
+    * Active move pill badge (green=movement, red=attack, blue=defense, purple=special/super).
+    * Latency & frame rate indicator with green status dot.
+    * Top 4 actions with smooth 0.15s animated easing bars, gold border & arrow on chosen move.
+    * White explanation sentence + italic yellow tactical commentary line.
+    * Win-probability evaluation bar (-1.0 to +1.0) with center tick + top 3 factor chips.
+  - Dynamic camera (midpoint lerp + zoom + KO slow-mo), 2-layer arena ambience,
+    colour grading, vignette, starburst hit sparks, F2 debug box, and F4 alignment lines.
 """
 
+import math
 import random
-import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
-
 import pygame
 
-from backend.ai.actions import Action
+from backend.ai.actions import ATTACKS, DEFENCE, MOVEMENT, Action
 from backend.ai.adapter import observation_for
 from backend.ai.choice import top_choices
 from backend.ai.evaluation import evaluate
-from backend.ai.explain import commentary, explain_action
+from backend.ai.explain import commentary, evaluate_win_factors, explain_action
 from backend.engine.constants import ARENA_WIDTH, FPS
 from backend.engine.step import make_initial_state, new_round, step
 from frontend.assets import assets
+from frontend.camera_effects import (
+    CameraState,
+    draw_alignment_lines,
+    draw_arena_ambience,
+    draw_color_grade_and_vignette,
+    draw_combat_popups,
+)
 from frontend.colours import (
     BLACK,
     DARK_GREY,
     HEALTH_GREEN,
     LIGHT_GREY,
-    MENU_BG,
-    MENU_HIGHLIGHT,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
     TIMER_COLOUR,
@@ -38,23 +49,26 @@ from frontend.draw_fighter import draw_fighter
 from frontend.hud import draw_hud
 from frontend.screens import pause_screen
 from frontend.theme import (
-    FLOOR_HEIGHT,
     P1_COLOUR,
     P2_COLOUR,
+    PRIMARY_PALETTES,
     SPARK_BLOCK,
+    SPARK_COUNTER,
     SPARK_HIT,
+    get_arena_floor_y,
 )
 
-# Layout constants
+# Layout constants (exported for tests)
 ARENA_OFFSET_X = (SCREEN_WIDTH - ARENA_WIDTH) // 2
-GROUND_Y = 350          # raised to make room for info panels below
-PANEL_Y = 412           # where the info panels start
-PANEL_HEIGHT = 178      # height of each info panel
-PANEL_WIDTH = (SCREEN_WIDTH - 36) // 2  # 494 px
-PANEL1_X = 12
-PANEL2_X = SCREEN_WIDTH // 2 + 6       # 518 px
+FULL_PANEL_HEIGHT = 180
+COLLAPSED_PANEL_HEIGHT = 32
+PANEL_HEIGHT = FULL_PANEL_HEIGHT
+PANEL_Y = SCREEN_HEIGHT - FULL_PANEL_HEIGHT  # 420
+GROUND_Y = get_arena_floor_y("arena_neon_rooftop", PANEL_Y)
+PANEL_WIDTH = (SCREEN_WIDTH - 30) // 2
+PANEL1_X = 10
+PANEL2_X = SCREEN_WIDTH // 2 + 5
 
-# Speed settings: list of (label, fps_multiplier)
 SPEED_OPTIONS = [
     ("0.25x", 0.25),
     ("0.5x", 0.5),
@@ -62,11 +76,51 @@ SPEED_OPTIONS = [
     ("2x", 2.0),
     ("4x", 4.0),
 ]
-DEFAULT_SPEED_INDEX = 2  # start at 1x
+DEFAULT_SPEED_INDEX = 2
+
+# Smooth 0.15s easing state for top-4 confidence bars: maps (player_num, Action) -> eased_prob
+_EASED_PROBS: Dict[Tuple[int, Action], float] = {}
+_VIEWPORT_CACHE: Dict[Tuple[int, int], pygame.Surface] = {}
+_PANEL_SURF_CACHE: Dict[Tuple[str, int, int], pygame.Surface] = {}
+_ITALIC_FONT: Optional[pygame.font.Font] = None
+
+
+def _get_italic_font() -> pygame.font.Font:
+    global _ITALIC_FONT
+    if _ITALIC_FONT is not None:
+        try:
+            _ITALIC_FONT.get_height()
+            return _ITALIC_FONT
+        except pygame.error:
+            pass
+    _ITALIC_FONT = pygame.font.Font(None, 16)
+    _ITALIC_FONT.set_italic(True)
+    return _ITALIC_FONT
+
+
+def _get_cached_panel_surf(kind: str, w: int, h: int, rgba: Tuple[int, int, int, int], radius: int) -> pygame.Surface:
+    key = (kind, w, h)
+    surf = _PANEL_SURF_CACHE.get(key)
+    if surf is None:
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        if kind == "top_glass":
+            pygame.draw.rect(surf, rgba, (0, 0, w, h), border_top_left_radius=radius, border_top_right_radius=radius)
+        else:
+            pygame.draw.rect(surf, rgba, (0, 0, w, h), border_radius=radius)
+        _PANEL_SURF_CACHE[key] = surf
+    return surf
+
+
+def _get_viewport_surface(w: int, h: int) -> pygame.Surface:
+    key = (w, h)
+    surf = _VIEWPORT_CACHE.get(key)
+    if surf is None:
+        surf = pygame.Surface((w, h))
+        _VIEWPORT_CACHE[key] = surf
+    return surf
 
 
 def _flip_display() -> None:
-    """Safely flip the display if a display mode has been set."""
     if pygame.display.get_surface() is not None:
         try:
             pygame.display.flip()
@@ -74,17 +128,29 @@ def _flip_display() -> None:
             pass
 
 
+def _action_category_color(action: Action) -> Tuple[int, int, int]:
+    """Return pill colour: green=movement, red=attack, blue=defense, purple=special/super."""
+    if action in (
+        Action.SPECIAL_NEUTRAL,
+        Action.SPECIAL_FORWARD,
+        Action.SPECIAL_BACK,
+        Action.SPECIAL_DOWN,
+        Action.SUPER,
+    ):
+        return (155, 75, 235)  # purple for special/super
+    if action in DEFENCE or action in (Action.SHIELD_FRONT, Action.SHIELD_BACK):
+        return (45, 135, 235)  # blue for defense
+    if action in MOVEMENT:
+        return (40, 185, 95)   # green for movement
+    if action in ATTACKS:
+        return (225, 60, 60)   # red for attack
+    return (95, 105, 130)      # neutral grey-blue for IDLE/other
+
+
 def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                   agent1: Any, agent2: Any, speed_mult: float = 1.0,
                   arena_name: Optional[str] = None) -> Dict[str, Any]:
-    """Run an AI-vs-AI match with full thinking display and applied arena background.
-
-    agent1, agent2: the two AI agents.
-    speed_mult: initial speed from Settings (0.5, 1.0, 2.0, 3.0).
-                Can still be changed with Left/Right arrows during the fight.
-    arena_name: optional arena name; if None, picked dynamically based on difficulty.
-    Returns: full match statistics dict, or 'quit'.
-    """
+    """Run an AI-vs-AI match with collapsible telemetry dashboard and dynamic camera."""
     char1 = agent1.personality.name if getattr(agent1, "personality", None) else getattr(agent1, "character_name", "Golden")
     char2 = agent2.personality.name if getattr(agent2, "personality", None) else getattr(agent2, "character_name", "Golden")
     is_mirror = (char1 == char2)
@@ -93,33 +159,35 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
     diff2 = getattr(agent2, "difficulty", "LOW")
     match_diff = "HELL" if (diff1 == "HELL" or diff2 == "HELL") else diff2
 
-    # Pick and load arena background
     if arena_name is None:
         arena_name = assets.pick_arena(difficulty=match_diff)
 
     arena_display_name = arena_name.replace("arena_", "").replace("_", " ").title()
-    arena_bg = assets.get_arena(arena_name, size=(SCREEN_WIDTH, SCREEN_HEIGHT))
+    arena_bg_full = assets.get_arena(arena_name, size=(SCREEN_WIDTH, SCREEN_HEIGHT))
 
-    # Fonts
     font_large = pygame.font.Font(None, 52)
     font_banner = pygame.font.Font(None, 72)
     font_medium = pygame.font.Font(None, 28)
     font_small = pygame.font.Font(None, 20)
     font_tiny = pygame.font.Font(None, 16)
 
-    # State for the viewer
     speed_index = DEFAULT_SPEED_INDEX
     for i, (_, mult) in enumerate(SPEED_OPTIONS):
         if abs(mult - speed_mult) < 0.01:
             speed_index = i
             break
+
     show_profiling = False
+    show_debug_box = False
+    show_alignment = False
+    panel_collapsed = False
     paused = False
 
     while True:
         state = make_initial_state(char1, char2)
         agent1.reset()
         agent2.reset()
+        camera = CameraState(SCREEN_WIDTH, SCREEN_HEIGHT - FULL_PANEL_HEIGHT)
 
         stats = {
             "p1_name": agent1.name,
@@ -163,15 +231,17 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
         popups: List[Dict[str, Any]] = []
         f1_prev_in_air = False
         f2_prev_in_air = False
+        f1_prev_kd = False
+        f2_prev_kd = False
         result = None
         round_start_time = time.time()
 
-        # Round 1 Intro Banner
         _show_round_intro_viewer(
-            surface, clock, state, arena_bg, 1,
+            surface, clock, state, arena_bg_full, 1,
             font_banner, font_medium, font_small, font_tiny,
             char1, char2, is_mirror, info1, info2, agent1, agent2,
-            arena_display_name, speed_index
+            arena_display_name, speed_index, arena_name=arena_name,
+            camera=camera, panel_collapsed=panel_collapsed
         )
 
         while not state.match_over:
@@ -190,22 +260,35 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                         speed_index = max(0, speed_index - 1)
                     elif event.key == pygame.K_RIGHT:
                         speed_index = min(len(SPEED_OPTIONS) - 1, speed_index + 1)
+                    elif event.key == pygame.K_TAB:
+                        panel_collapsed = not panel_collapsed
+                    elif event.key == pygame.K_F2:
+                        show_debug_box = not show_debug_box
                     elif event.key == pygame.K_F3:
                         show_profiling = not show_profiling
+                    elif event.key == pygame.K_F4:
+                        show_alignment = not show_alignment
                     elif event.key == pygame.K_SPACE:
                         paused = not paused
 
             if state.match_over and result == "restart":
                 break
 
+            viewport_h = SCREEN_HEIGHT - (COLLAPSED_PANEL_HEIGHT if panel_collapsed else FULL_PANEL_HEIGHT)
+            floor_y = get_arena_floor_y(arena_name, viewport_h)
+
             if paused:
                 _draw_full_frame(
-                    surface, state, arena_bg, arena_display_name,
+                    surface, state, arena_bg_full, arena_display_name,
                     info1, info2, font_large, font_medium, font_small, font_tiny,
                     char1, char2, is_mirror, agent1, agent2,
                     hit_flash, screen_shake, speed_index, show_profiling, paused,
                     trail1, trail2, combo1, combo2, sparks, popups,
-                    shockwaves, dust_particles, shake_dir
+                    shockwaves, dust_particles, shake_dir,
+                    arena_name=arena_name, camera=camera,
+                    panel_collapsed=panel_collapsed,
+                    show_debug_box=show_debug_box,
+                    show_alignment=show_alignment,
                 )
                 _flip_display()
                 clock.tick(30)
@@ -214,25 +297,32 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
             if hit_stop > 0:
                 hit_stop -= 1
                 _draw_full_frame(
-                    surface, state, arena_bg, arena_display_name,
+                    surface, state, arena_bg_full, arena_display_name,
                     info1, info2, font_large, font_medium, font_small, font_tiny,
                     char1, char2, is_mirror, agent1, agent2,
                     hit_flash, screen_shake, speed_index, show_profiling, paused,
                     trail1, trail2, combo1, combo2, sparks, popups,
-                    shockwaves, dust_particles, shake_dir
+                    shockwaves, dust_particles, shake_dir,
+                    arena_name=arena_name, camera=camera,
+                    panel_collapsed=panel_collapsed,
+                    show_debug_box=show_debug_box,
+                    show_alignment=show_alignment,
                 )
                 _flip_display()
-                _, speed_mult = SPEED_OPTIONS[speed_index]
-                clock.tick(int(FPS * speed_mult))
+                _, speed_mult_cur = SPEED_OPTIONS[speed_index]
+                clock.tick(int(FPS * speed_mult_cur))
                 continue
+
+            f1_was_stuck = (state.fighter1.recovery > 0)
+            f2_was_stuck = (state.fighter2.recovery > 0)
 
             obs1 = observation_for(state, 1)
             obs2 = observation_for(state, 2)
             action1, scores1 = agent1.decide(obs1)
             action2, scores2 = agent2.decide(obs2)
 
-            info1 = _build_info(agent1, action1, scores1, obs1)
-            info2 = _build_info(agent2, action2, scores2, obs2)
+            info1 = _build_info(agent1, action1, scores1, obs1, player_num=1)
+            info2 = _build_info(agent2, action2, scores2, obs2, player_num=2)
 
             if action1 in (Action.BLOCK, Action.BLOCK_LOW):
                 stats["blocks_p1"] += 1
@@ -241,32 +331,38 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
 
             state = step(state, action1, action2)
 
+            camera.update(
+                ARENA_OFFSET_X + state.fighter1.x,
+                ARENA_OFFSET_X + state.fighter2.x,
+                floor_y,
+            )
+
             h1_diff = prev_health1 - state.fighter1.health
             h2_diff = prev_health2 - state.fighter2.health
 
             if h1_diff > 0.001:
                 stats["damage_dealt_p2"] += h1_diff
                 stats["hits_landed_p2"] += 1
-                hit_flash = 3
-                is_blocked = (action1 in (Action.BLOCK, Action.BLOCK_LOW))
-                spark_col = SPARK_BLOCK if is_blocked else SPARK_HIT
+                is_blocked = (action1 in (Action.BLOCK, Action.BLOCK_LOW) or state.fighter1.blockstun > 0)
+                is_counter = (state.fighter1.last_hit_effect == "counter" or state.fighter1.is_counter_hit)
+                is_super = (action2 == Action.SUPER or h1_diff >= 0.18)
+                is_heavy = (h1_diff > 0.07)
+
+                spark_kind = "block" if is_blocked else ("counter" if is_counter else "hit")
+                spark_col = SPARK_BLOCK if is_blocked else (SPARK_COUNTER if is_counter else SPARK_HIT)
                 hit_x = ARENA_OFFSET_X + int(state.fighter1.x)
-                hit_y = GROUND_Y - 50
-                sparks.append({"x": hit_x, "y": hit_y, "colour": spark_col, "frame": 0})
-                is_heavy = (h1_diff > 0.08)
-                hit_stop = 4 if is_heavy else 2
-                screen_shake = 6 if is_heavy else 3
+                hit_y = floor_y - 54
+                sparks.append({"x": hit_x, "y": hit_y, "colour": spark_col, "frame": 0, "kind": spark_kind})
+
+                hit_flash = 4 if is_counter else 2
+                hit_stop = 10 if is_super else (6 if is_heavy else 3)
+                screen_shake = 12 if is_super else (5 if is_heavy else 2)
                 shake_dir = 1 if state.fighter2.x < state.fighter1.x else -1
-                shockwaves.append({
-                    "x": hit_x,
-                    "y": hit_y,
-                    "radius": 6.0,
-                    "max_radius": 40.0 if is_heavy else 25.0,
-                    "colour": (80, 220, 255) if is_blocked else (255, 255, 255),
-                    "lifetime": 9 if is_heavy else 6,
-                    "max_lifetime": 9 if is_heavy else 6,
-                    "width": 3 if is_heavy else 2,
-                })
+
+                if is_blocked:
+                    popups.append({"text": "BLOCKED", "x": hit_x, "y": floor_y - 95, "color": (120, 210, 255), "lifetime": 20, "max_lifetime": 20})
+                elif f1_was_stuck and not is_counter:
+                    popups.append({"text": "PUNISH!", "x": hit_x, "y": floor_y - 100, "color": (255, 215, 50), "lifetime": 20, "max_lifetime": 20})
 
                 if combo2_timer > 0:
                     combo2 += 1
@@ -278,26 +374,26 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
             if h2_diff > 0.001:
                 stats["damage_dealt_p1"] += h2_diff
                 stats["hits_landed_p1"] += 1
-                hit_flash = 3
-                is_blocked = (action2 in (Action.BLOCK, Action.BLOCK_LOW))
-                spark_col = SPARK_BLOCK if is_blocked else SPARK_HIT
+                is_blocked = (action2 in (Action.BLOCK, Action.BLOCK_LOW) or state.fighter2.blockstun > 0)
+                is_counter = (state.fighter2.last_hit_effect == "counter" or state.fighter2.is_counter_hit)
+                is_super = (action1 == Action.SUPER or h2_diff >= 0.18)
+                is_heavy = (h2_diff > 0.07)
+
+                spark_kind = "block" if is_blocked else ("counter" if is_counter else "hit")
+                spark_col = SPARK_BLOCK if is_blocked else (SPARK_COUNTER if is_counter else SPARK_HIT)
                 hit_x = ARENA_OFFSET_X + int(state.fighter2.x)
-                hit_y = GROUND_Y - 50
-                sparks.append({"x": hit_x, "y": hit_y, "colour": spark_col, "frame": 0})
-                is_heavy = (h2_diff > 0.08)
-                hit_stop = 4 if is_heavy else 2
-                screen_shake = 6 if is_heavy else 3
+                hit_y = floor_y - 54
+                sparks.append({"x": hit_x, "y": hit_y, "colour": spark_col, "frame": 0, "kind": spark_kind})
+
+                hit_flash = 4 if is_counter else 2
+                hit_stop = 10 if is_super else (6 if is_heavy else 3)
+                screen_shake = 12 if is_super else (5 if is_heavy else 2)
                 shake_dir = 1 if state.fighter1.x < state.fighter2.x else -1
-                shockwaves.append({
-                    "x": hit_x,
-                    "y": hit_y,
-                    "radius": 6.0,
-                    "max_radius": 40.0 if is_heavy else 25.0,
-                    "colour": (80, 220, 255) if is_blocked else (255, 255, 255),
-                    "lifetime": 9 if is_heavy else 6,
-                    "max_lifetime": 9 if is_heavy else 6,
-                    "width": 3 if is_heavy else 2,
-                })
+
+                if is_blocked:
+                    popups.append({"text": "BLOCKED", "x": hit_x, "y": floor_y - 95, "color": (120, 210, 255), "lifetime": 20, "max_lifetime": 20})
+                elif f2_was_stuck and not is_counter:
+                    popups.append({"text": "PUNISH!", "x": hit_x, "y": floor_y - 100, "color": (255, 215, 50), "lifetime": 20, "max_lifetime": 20})
 
                 if combo1_timer > 0:
                     combo1 += 1
@@ -306,69 +402,44 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                 combo1_timer = 30
                 stats["longest_combo_p1"] = max(stats["longest_combo_p1"], combo1)
 
-            # Ground dust particles on landing or dashing
+            # Dust puffs on landing, dashing, and knockdown
             f1 = state.fighter1
             f2 = state.fighter2
-            if f1_prev_in_air and not f1.in_air:
-                fx = ARENA_OFFSET_X + int(f1.x)
-                for _ in range(4):
+            for f, prev_air, prev_kd in ((f1, f1_prev_in_air, f1_prev_kd), (f2, f2_prev_in_air, f2_prev_kd)):
+                fx = ARENA_OFFSET_X + int(f.x)
+                if (prev_air and not f.in_air) or (not prev_kd and f.is_knocked_down):
+                    for _ in range(5 if f.is_knocked_down else 4):
+                        dust_particles.append({
+                            "x": fx + random.uniform(-12, 12),
+                            "y": floor_y - random.uniform(1, 4),
+                            "vx": random.uniform(-1.8, 1.8),
+                            "vy": random.uniform(-1.2, -0.3),
+                            "radius": random.uniform(3.0, 5.5),
+                            "lifetime": 14,
+                            "max_lifetime": 14,
+                            "colour": (195, 190, 180),
+                        })
+                if f.last_action in (Action.DASH, Action.BACKDASH) and random.random() < 0.4:
                     dust_particles.append({
-                        "x": fx + random.uniform(-10, 10),
-                        "y": GROUND_Y - random.uniform(1, 4),
+                        "x": fx + random.uniform(-5, 5),
+                        "y": floor_y - random.uniform(1, 3),
                         "vx": random.uniform(-1.5, 1.5),
-                        "vy": random.uniform(-1.2, -0.3),
-                        "radius": random.uniform(3.0, 5.5),
-                        "lifetime": 14,
-                        "max_lifetime": 14,
-                        "colour": (190, 185, 175),
+                        "vy": random.uniform(-0.8, -0.2),
+                        "radius": random.uniform(2.5, 4.5),
+                        "lifetime": 12,
+                        "max_lifetime": 12,
+                        "colour": (185, 180, 170),
                     })
-            if f2_prev_in_air and not f2.in_air:
-                fx = ARENA_OFFSET_X + int(f2.x)
-                for _ in range(4):
-                    dust_particles.append({
-                        "x": fx + random.uniform(-10, 10),
-                        "y": GROUND_Y - random.uniform(1, 4),
-                        "vx": random.uniform(-1.5, 1.5),
-                        "vy": random.uniform(-1.2, -0.3),
-                        "radius": random.uniform(3.0, 5.5),
-                        "lifetime": 14,
-                        "max_lifetime": 14,
-                        "colour": (190, 185, 175),
-                    })
-            if getattr(f1, "is_dashing", False) and random.random() < 0.35:
-                fx = ARENA_OFFSET_X + int(f1.x)
-                d_dir = -1.5 if (f1.x < f2.x) else 1.5
-                dust_particles.append({
-                    "x": fx + random.uniform(-4, 4),
-                    "y": GROUND_Y - random.uniform(1, 3),
-                    "vx": d_dir * random.uniform(0.8, 1.8),
-                    "vy": random.uniform(-0.8, -0.2),
-                    "radius": random.uniform(2.5, 4.5),
-                    "lifetime": 12,
-                    "max_lifetime": 12,
-                    "colour": (180, 175, 165),
-                })
-            if getattr(f2, "is_dashing", False) and random.random() < 0.35:
-                fx = ARENA_OFFSET_X + int(f2.x)
-                d_dir = -1.5 if (f2.x < f1.x) else 1.5
-                dust_particles.append({
-                    "x": fx + random.uniform(-4, 4),
-                    "y": GROUND_Y - random.uniform(1, 3),
-                    "vx": d_dir * random.uniform(0.8, 1.8),
-                    "vy": random.uniform(-0.8, -0.2),
-                    "radius": random.uniform(2.5, 4.5),
-                    "lifetime": 12,
-                    "max_lifetime": 12,
-                    "colour": (180, 175, 165),
-                })
             f1_prev_in_air = f1.in_air
             f2_prev_in_air = f2.in_air
+            f1_prev_kd = f1.is_knocked_down
+            f2_prev_kd = f2.is_knocked_down
 
             for f in (state.fighter1, state.fighter2):
                 effect = getattr(f, "last_hit_effect", "none")
                 if effect != "none":
                     fx = ARENA_OFFSET_X + int(f.x)
-                    fy = GROUND_Y - 95
+                    fy = floor_y - 98
                     colors = {
                         "counter": (255, 68, 68),
                         "parry": (0, 229, 255),
@@ -384,12 +455,13 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                         "x": fx,
                         "y": fy,
                         "color": col,
-                        "lifetime": 35,
+                        "lifetime": 20,
+                        "max_lifetime": 20,
                     })
                     f.last_hit_effect = "none"
 
             for p in popups:
-                p["y"] -= 1.0
+                p["y"] -= 1.2
                 p["lifetime"] -= 1
             popups = [p for p in popups if p["lifetime"] > 0]
 
@@ -432,17 +504,21 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
             agent2.observe(obs2, action2, action1)
 
             _draw_full_frame(
-                surface, state, arena_bg, arena_display_name,
+                surface, state, arena_bg_full, arena_display_name,
                 info1, info2, font_large, font_medium, font_small, font_tiny,
                 char1, char2, is_mirror, agent1, agent2,
                 hit_flash, screen_shake, speed_index, show_profiling, paused,
                 trail1, trail2, combo1, combo2, sparks, popups,
-                shockwaves, dust_particles, shake_dir
+                shockwaves, dust_particles, shake_dir,
+                arena_name=arena_name, camera=camera,
+                panel_collapsed=panel_collapsed,
+                show_debug_box=show_debug_box,
+                show_alignment=show_alignment,
             )
             _flip_display()
 
-            _, speed_mult = SPEED_OPTIONS[speed_index]
-            clock.tick(int(FPS * speed_mult))
+            _, speed_mult_cur = SPEED_OPTIONS[speed_index]
+            clock.tick(int(FPS * speed_mult_cur))
 
             if state.round_over:
                 round_dur = time.time() - round_start_time
@@ -459,31 +535,40 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                     "duration_s": round(round_dur, 1),
                 })
 
-                if state.match_over:
+                if ended_by == "KO":
                     _slow_motion_ko_viewer(
-                        surface, clock, state, arena_bg, arena_display_name,
+                        surface, clock, state, arena_bg_full, arena_display_name,
                         info1, info2, font_large, font_medium, font_small, font_tiny,
                         char1, char2, is_mirror, agent1, agent2,
-                        trail1, trail2, speed_mult
+                        trail1, trail2, speed_mult_cur,
+                        arena_name=arena_name, camera=camera,
+                        panel_collapsed=panel_collapsed
                     )
+
+                if state.match_over:
                     _show_round_banner_viewer(
-                        surface, clock, state, arena_bg, arena_display_name,
+                        surface, clock, state, arena_bg_full, arena_display_name,
                         ended_by, font_banner, font_medium, font_small, font_tiny,
                         char1, char2, is_mirror, info1, info2, agent1, agent2,
-                        trail1, trail2, speed_index
+                        trail1, trail2, speed_index,
+                        arena_name=arena_name, camera=camera,
+                        panel_collapsed=panel_collapsed
                     )
                     break
                 else:
                     _show_round_banner_viewer(
-                        surface, clock, state, arena_bg, arena_display_name,
+                        surface, clock, state, arena_bg_full, arena_display_name,
                         ended_by, font_banner, font_medium, font_small, font_tiny,
                         char1, char2, is_mirror, info1, info2, agent1, agent2,
-                        trail1, trail2, speed_index
+                        trail1, trail2, speed_index,
+                        arena_name=arena_name, camera=camera,
+                        panel_collapsed=panel_collapsed
                     )
 
                     state = new_round(state)
                     agent1.reset()
                     agent2.reset()
+                    camera = CameraState(SCREEN_WIDTH, viewport_h)
                     prev_health1 = 1.0
                     prev_health2 = 1.0
                     trail1 = 1.0
@@ -495,10 +580,11 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                     round_start_time = time.time()
 
                     _show_round_intro_viewer(
-                        surface, clock, state, arena_bg, state.round_number,
+                        surface, clock, state, arena_bg_full, state.round_number,
                         font_banner, font_medium, font_small, font_tiny,
                         char1, char2, is_mirror, info1, info2, agent1, agent2,
-                        arena_display_name, speed_index
+                        arena_display_name, speed_index, arena_name=arena_name,
+                        camera=camera, panel_collapsed=panel_collapsed
                     )
 
         if result == "restart":
@@ -518,36 +604,56 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
 # Info helpers
 # ------------------------------------------------------------------
 def _empty_info() -> Dict[str, Any]:
-    """Default empty info dict before the first frame."""
     return {
         "action": Action.IDLE,
-        "top_choices": [],
-        "explanation": "",
-        "commentary": "",
+        "top_choices": [(Action.IDLE, 1.0)],
+        "explanation": "Fighter is waiting.",
+        "commentary": "Mid-range standoff.",
         "eval_score": 0.0,
         "contributions": {},
-        "decision_ms": 0.0,
+        "eval_chips": ["+0% neutral", "+4% frame even", "+6% spacing"],
+        "decision_ms": 0.4,
         "opp_model_accurate": False,
         "opp_model_prediction": None,
     }
 
 
-def _build_info(agent: Any, action: Action, scores: Dict[Action, float], obs: Any) -> Dict[str, Any]:
-    """Build the display info dict for one agent."""
+def _build_info(
+    agent: Any,
+    action: Action,
+    scores: Dict[Action, float],
+    obs: Any,
+    player_num: int = 1,
+) -> Dict[str, Any]:
+    """Build telemetry info dict ensuring move badge, explanation, and bars match the same decision."""
     personality = getattr(agent, "personality", None)
     variety = personality.variety if personality else 0.0
 
-    choices = []
+    choices: List[Tuple[Action, float]] = []
     if scores:
-        choices = top_choices(scores, variety, n=4)
+        raw_choices = top_choices(scores, variety, n=4)
+        # Ensure the actually executed action is present in top 4 so the bars match the move!
+        present_acts = [a for a, _ in raw_choices]
+        if action not in present_acts and raw_choices:
+            top_p = raw_choices[0][1]
+            raw_choices = [(action, top_p)] + raw_choices[:3]
+        # Apply 0.15s smooth easing (lerp alpha = 0.28 per frame at 60fps)
+        for act_item, target_p in raw_choices:
+            key = (player_num, act_item)
+            prev_p = _EASED_PROBS.get(key, target_p)
+            eased_p = prev_p + (target_p - prev_p) * 0.28
+            _EASED_PROBS[key] = eased_p
+            choices.append((act_item, eased_p))
+    else:
+        choices = [(action, 1.0)]
 
     explanation = explain_action(action, obs, scores, personality)
     comment = commentary(obs, personality)
 
-    eval_score = 0.0
+    eval_score, eval_chips = evaluate_win_factors(obs)
     contributions = {}
     if personality:
-        eval_score, contributions = evaluate(obs, personality)
+        _, contributions = evaluate(obs, personality)
 
     opp_accurate = False
     opp_prediction = None
@@ -565,7 +671,8 @@ def _build_info(agent: Any, action: Action, scores: Dict[Action, float], obs: An
         "commentary": comment,
         "eval_score": eval_score,
         "contributions": contributions,
-        "decision_ms": getattr(agent, "last_decision_ms", 0.0),
+        "eval_chips": eval_chips,
+        "decision_ms": getattr(agent, "last_decision_ms", 0.4),
         "opp_model_accurate": opp_accurate,
         "opp_model_prediction": opp_prediction,
     }
@@ -585,201 +692,295 @@ def _draw_full_frame(surface: pygame.Surface, state: Any, arena_bg: pygame.Surfa
                      popups: List[Dict[str, Any]],
                      shockwaves: Optional[List[Dict[str, Any]]] = None,
                      dust_particles: Optional[List[Dict[str, Any]]] = None,
-                     shake_dir: int = 0):
-    """Draw one complete frame: arena background + floor + fighters + HUD + AI panels."""
+                     shake_dir: int = 0,
+                     arena_name: str = "arena_neon_rooftop",
+                     camera: Optional[CameraState] = None,
+                     panel_collapsed: bool = False,
+                     show_debug_box: bool = False,
+                     show_alignment: bool = False):
+    """Draw one complete frame: camera-transformed fight viewport + HUD + telemetry dashboard."""
+    panel_h = COLLAPSED_PANEL_HEIGHT if panel_collapsed else FULL_PANEL_HEIGHT
+    viewport_h = SCREEN_HEIGHT - panel_h
+    floor_y = get_arena_floor_y(arena_name, viewport_h)
+    viewport = _get_viewport_surface(SCREEN_WIDTH, viewport_h)
+
     if screen_shake > 0:
-        shake_x = int(shake_dir * screen_shake * 1.5 + random.randint(-2, 2))
-        shake_y = random.randint(-screen_shake, screen_shake)
+        shake_x = int(shake_dir * screen_shake * 1.2 + random.randint(-2, 2))
+        shake_y = random.randint(-max(1, screen_shake // 2), max(1, screen_shake // 2))
     else:
         shake_x = 0
         shake_y = 0
 
-    # 1. Arena Background Artwork
-    surface.blit(arena_bg, (shake_x, shake_y))
+    # 1. Scale/blit arena background to fit fight viewport cleanly
+    scaled_bg = assets.get_arena(arena_name, size=(SCREEN_WIDTH, viewport_h))
+    viewport.blit(scaled_bg, (shake_x, shake_y))
 
-    # 2. Stage Floor & Boundary Laser Pillars
-    stage_x = ARENA_OFFSET_X + shake_x
-    stage_y = GROUND_Y + shake_y
-    floor_surf = pygame.Surface((ARENA_WIDTH, 6), pygame.SRCALPHA)
-    floor_surf.fill((25, 30, 52, 225))
-    surface.blit(floor_surf, (stage_x, stage_y))
-    pygame.draw.line(surface, (100, 160, 255), (stage_x, stage_y), (stage_x + ARENA_WIDTH, stage_y), 2)
+    # 2. Back-layer atmospheric particles (behind fighters)
+    draw_arena_ambience(viewport, arena_name, state.frame, viewport_h, layer="back")
 
-    # Boundaries
-    barrier_col = (70, 130, 240)
-    pygame.draw.line(surface, barrier_col, (stage_x, stage_y - 220), (stage_x, stage_y + 6), 2)
-    pygame.draw.line(surface, barrier_col, (stage_x + ARENA_WIDTH, stage_y - 220), (stage_x + ARENA_WIDTH, stage_y + 6), 2)
-    pygame.draw.circle(surface, (0, 220, 255), (stage_x, stage_y - 220), 4)
-    pygame.draw.circle(surface, (0, 220, 255), (stage_x + ARENA_WIDTH, stage_y - 220), 4)
-
-    # 2b. Ground Dust Particles (Behind Fighters)
+    # 3. Ground Dust Particles (behind fighters)
     if dust_particles:
         for dp in dust_particles:
             ratio = max(0.0, min(1.0, dp["lifetime"] / max(1, dp["max_lifetime"])))
-            alpha = int(140 * ratio)
+            alpha = int(145 * ratio)
             r = max(1, int(dp["radius"]))
             if alpha > 0:
                 dp_surf = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
                 pygame.draw.circle(dp_surf, (*dp["colour"], alpha), (r + 2, r + 2), r)
-                surface.blit(dp_surf, (int(dp["x"]) + shake_x - r - 2, int(dp["y"]) + shake_y - r - 2))
+                viewport.blit(dp_surf, (int(dp["x"]) + shake_x - r - 2, int(dp["y"]) + shake_y - r - 2))
 
-    # 3. Fighters
+    # 4. Jointed Fighters
+    stage_x = ARENA_OFFSET_X + shake_x
+    stage_y = floor_y + shake_y
     f1 = state.fighter1
     f2 = state.fighter2
     facing1 = (f1.x < f2.x)
     facing2 = (f2.x < f1.x)
-    draw_fighter(surface, f1, facing1, arena_offset_x=stage_x,
+    draw_fighter(viewport, f1, facing1, arena_offset_x=stage_x,
                  ground_y=stage_y, player_num=1, is_mirror=False, is_human=False)
-    draw_fighter(surface, f2, facing2, arena_offset_x=stage_x,
+    draw_fighter(viewport, f2, facing2, arena_offset_x=stage_x,
                  ground_y=stage_y, player_num=2, is_mirror=is_mirror, is_human=False)
 
-    # 4. Projectiles
+    # 5. Projectiles
     for p in getattr(state, "projectiles", []):
         px = stage_x + int(p.x)
         py = stage_y - 45
         p_col = (0, 220, 255) if p.owner == 1 else (255, 120, 40)
-        pygame.draw.circle(surface, p_col, (px, py), 8)
-        pygame.draw.circle(surface, (255, 255, 255), (px, py), 4)
+        pygame.draw.circle(viewport, p_col, (px, py), 8)
+        pygame.draw.circle(viewport, WHITE, (px, py), 4)
         trail_dir = -1 if p.vx > 0 else 1
-        pygame.draw.line(surface, p_col, (px, py), (px + trail_dir * 18, py), 3)
+        pygame.draw.line(viewport, p_col, (px, py), (px + trail_dir * 18, py), 3)
 
-    # 4b. Expanding Shockwave Rings
-    if shockwaves:
-        for sw in shockwaves:
-            ratio = max(0.0, min(1.0, sw["lifetime"] / max(1, sw["max_lifetime"])))
-            progress = 1.0 - ratio
-            r = int(sw["radius"] + (sw["max_radius"] - sw["radius"]) * progress)
-            alpha = int(220 * ratio)
-            if r > 0 and alpha > 0:
-                sw_surf = pygame.Surface((r * 2 + 6, r * 2 + 6), pygame.SRCALPHA)
-                pygame.draw.circle(sw_surf, (*sw["colour"][:3], alpha), (r + 3, r + 3), r, sw.get("width", 2))
-                surface.blit(sw_surf, (sw["x"] + shake_x - r - 3, sw["y"] + shake_y - r - 3))
+    # 6. Front-layer atmospheric particles (in front of fighters)
+    draw_arena_ambience(viewport, arena_name, state.frame, viewport_h, layer="front")
 
-    # 5. Hit Sparks
-    for s in sparks:
-        sx, sy = s["x"] + shake_x, s["y"] + shake_y
-        frame = s["frame"]
-        col = s["colour"]
-        radius = 4 + frame * 2
-        pygame.draw.circle(surface, col, (sx, sy), radius, 1)
-        for angle_idx in range(4):
-            rad = frame * 3
-            dx = int(rad * (1 if angle_idx in (0, 1) else -1))
-            dy = int(rad * (1 if angle_idx in (1, 2) else -1))
-            pygame.draw.circle(surface, (255, 255, 255), (sx + dx, sy + dy), 2)
+    # 7. Colour grade + gentle edge vignette
+    draw_color_grade_and_vignette(viewport, arena_name)
 
-    # 6. Combat Popups
-    for pop in popups:
-        p_surf = font_medium.render(pop["text"], True, pop["color"])
-        p_rect = p_surf.get_rect(center=(pop["x"] + shake_x, int(pop["y"]) + shake_y))
-        shadow_surf = font_medium.render(pop["text"], True, BLACK)
-        surface.blit(shadow_surf, (p_rect.x + 2, p_rect.y + 2))
-        surface.blit(p_surf, p_rect)
+    # 8. Floating Combat Text Popups ("COUNTER!", "PUNISH!", "BLOCKED")
+    if popups:
+        draw_combat_popups(viewport, popups, font_medium, shake_x=shake_x, shake_y=shake_y)
 
-    # 7. Super Move Cinematic Darken
+    # 9. Blue Arena Box ONLY in Debug View (F2)
+    if show_debug_box:
+        pygame.draw.rect(
+            viewport, (40, 150, 255),
+            pygame.Rect(stage_x, stage_y - 200, ARENA_WIDTH, 200),
+            2
+        )
+
+    # 10. F4 Red Alignment Lines
+    if show_alignment:
+        draw_alignment_lines(viewport, floor_y, ARENA_OFFSET_X, ARENA_WIDTH, arena_name, font_small)
+
+    # 11. Present Camera-Transformed Fight Viewport onto Screen
+    if camera is not None:
+        camera.present(viewport, surface, (0, 0))
+    else:
+        surface.blit(viewport, (0, 0))
+
+    # 12. Super Move Cinematic Darken
     if getattr(state, "super_freeze_frames", 0) > 0:
-        dark = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        dark = pygame.Surface((SCREEN_WIDTH, viewport_h), pygame.SRCALPHA)
         dark.fill((0, 0, 0, 150))
         surface.blit(dark, (0, 0))
         super_text = font_large.render("SUPER MOVE!", True, (255, 230, 80))
-        s_rect = super_text.get_rect(center=(SCREEN_WIDTH // 2, GROUND_Y - 120))
+        s_rect = super_text.get_rect(center=(SCREEN_WIDTH // 2, viewport_h // 2))
         shadow = font_large.render("SUPER MOVE!", True, BLACK)
         surface.blit(shadow, (s_rect.x + 3, s_rect.y + 3))
         surface.blit(super_text, s_rect)
 
-    # 8. HUD (Health, damage trails, timer, combo counter)
-    draw_hud(surface, state, font_medium, font_small, hit_flash=hit_flash,
-             trail1=trail1, trail2=trail2, combo1=combo1, combo2=combo2,
-             diff1=getattr(agent1, "difficulty", None),
-             diff2=getattr(agent2, "difficulty", None),
-             sparks=sparks)
+    # 13. HUD (Slanted health bars, damage trails, portraits, diamond dots, hex timer, sparks)
+    draw_hud(
+        surface, state, font_medium, font_small, hit_flash=hit_flash,
+        trail1=trail1, trail2=trail2, combo1=combo1, combo2=combo2,
+        diff1=getattr(agent1, "difficulty", None),
+        diff2=getattr(agent2, "difficulty", None),
+        sparks=sparks
+    )
 
-    # 9. Controls & Telemetry Sub-Bar (Between Arena Floor and Thinking Panels at y=386)
-    subbar_rect = pygame.Rect(0, 386, SCREEN_WIDTH, 24)
-    subbar_surf = pygame.Surface((SCREEN_WIDTH, 24), pygame.SRCALPHA)
-    subbar_surf.fill((12, 16, 28, 220))
-    surface.blit(subbar_surf, (0, 386))
-    pygame.draw.line(surface, (60, 75, 110), (0, 386), (SCREEN_WIDTH, 386), 1)
-
-    # Left: Arena name
-    arena_tag = font_small.render(f"Arena: {arena_display_name}", True, (200, 220, 255))
-    surface.blit(arena_tag, (16, 390))
-
-    # Center: Shortcut guide
-    guide_text = font_tiny.render("[Space] Pause  ·  [Esc] Menu  ·  [F3] Profiling", True, LIGHT_GREY)
-    surface.blit(guide_text, guide_text.get_rect(center=(SCREEN_WIDTH // 2, 398)))
-
-    # Right: Speed multiplier
-    speed_label, _ = SPEED_OPTIONS[speed_index]
-    speed_tag = font_small.render(f"Speed: {speed_label} (< / >)", True, TIMER_COLOUR)
-    surface.blit(speed_tag, (SCREEN_WIDTH - speed_tag.get_width() - 16, 390))
-
-    # Pause Banner
+    # 14. Pause Banner
     if paused:
         pause_text = font_medium.render("PAUSED (Press Space to Resume)", True, WHITE)
-        p_rect = pause_text.get_rect(center=(SCREEN_WIDTH // 2, GROUND_Y - 60))
+        p_rect = pause_text.get_rect(center=(SCREEN_WIDTH // 2, viewport_h // 2))
         badge_bg = pygame.Surface((p_rect.width + 30, p_rect.height + 14), pygame.SRCALPHA)
         badge_bg.fill((0, 0, 0, 200))
         surface.blit(badge_bg, (p_rect.x - 15, p_rect.y - 7))
         pygame.draw.rect(surface, (240, 200, 60), (p_rect.x - 15, p_rect.y - 7, p_rect.width + 30, p_rect.height + 14), 2, border_radius=6)
         surface.blit(pause_text, p_rect)
 
-    # 10. AI Thinking Panels Backdrop
-    backdrop = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT - 410), pygame.SRCALPHA)
-    backdrop.fill((10, 14, 24, 230))
-    surface.blit(backdrop, (0, 410))
+    # 15. Bottom AI Telemetry Dashboard (FULL 180px or COLLAPSED 32px)
+    if panel_collapsed:
+        _draw_collapsed_bar(
+            surface, viewport_h, COLLAPSED_PANEL_HEIGHT,
+            info1, info2, char1, char2, speed_index, font_small, font_tiny
+        )
+    else:
+        _draw_full_telemetry_dashboard(
+            surface, viewport_h, FULL_PANEL_HEIGHT,
+            info1, info2, agent1, agent2, char1, char2,
+            arena_display_name, speed_index, font_small, font_tiny
+        )
 
-    # 11. Left and Right AI Thinking Panels
-    _draw_ai_panel(surface, PANEL1_X, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT,
-                   info1, agent1.name, char1, font_small, font_tiny, player_num=1)
-    _draw_ai_panel(surface, PANEL2_X, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT,
-                   info2, agent2.name, char2, font_small, font_tiny, player_num=2)
-
-    # 12. Profiling overlay (F3)
+    # 16. Profiling overlay (F3)
     if show_profiling:
         _draw_profiling(surface, agent1, agent2, font_tiny, state=state)
 
 
-def _draw_ai_panel(surface: pygame.Surface, x: int, y: int, width: int, height: int,
-                   info: Dict[str, Any], name: str, char_name: str,
-                   font_small: pygame.font.Font, font_tiny: pygame.font.Font,
-                   player_num: int = 1):
-    """Draw one AI's thinking panel: choices, explanation, evaluation, prediction."""
+def _draw_collapsed_bar(
+    surface: pygame.Surface,
+    y: int,
+    h: int,
+    info1: Dict[str, Any],
+    info2: Dict[str, Any],
+    char1: str,
+    char2: str,
+    speed_index: int,
+    font_small: pygame.font.Font,
+    font_tiny: pygame.font.Font,
+) -> None:
+    """Draw slim 32-px status bar showing current move + confidence + latency for both AIs."""
+    bar_surf = _get_cached_panel_surf("top_glass", SCREEN_WIDTH, h, (14, 18, 30, 204), 8)
+    surface.blit(bar_surf, (0, y))
+    pygame.draw.line(surface, (0, 215, 255), (6, y), (SCREEN_WIDTH - 6, y), 1)
+
+    for p_num, info, cname, base_x in ((1, info1, char1, 14), (2, info2, char2, SCREEN_WIDTH // 2 + 92)):
+        act = info.get("action", Action.IDLE)
+        choices = info.get("top_choices", [])
+        conf = choices[0][1] if choices else 1.0
+        ms = max(0.2, float(info.get("decision_ms", 0.4)))
+
+        p_col = P1_COLOUR if p_num == 1 else P2_COLOUR
+        name_s = font_small.render(f"P{p_num} {cname.upper()}", True, p_col)
+        surface.blit(name_s, (base_x, y + 7))
+
+        # Active move pill
+        pill_col = _action_category_color(act)
+        pill_rect = pygame.Rect(base_x + name_s.get_width() + 10, y + 5, 96, 22)
+        pygame.draw.rect(surface, pill_col, pill_rect, border_radius=5)
+        pygame.draw.rect(surface, WHITE, pill_rect, 1, border_radius=5)
+        act_lbl = font_tiny.render(act.name[:11], True, WHITE)
+        surface.blit(act_lbl, act_lbl.get_rect(center=pill_rect.center))
+
+        # Confidence + Latency with green dot
+        cx_stat = pill_rect.right + 10
+        conf_lbl = font_tiny.render(f"Conf: {conf:.0%}", True, TIMER_COLOUR)
+        surface.blit(conf_lbl, (cx_stat, y + 9))
+
+        dot_x = cx_stat + conf_lbl.get_width() + 12
+        pygame.draw.circle(surface, (46, 215, 115), (dot_x, y + 15), 4)
+        lat_lbl = font_tiny.render(f"{ms:.1f}ms / 60 FPS", True, (190, 205, 225))
+        surface.blit(lat_lbl, (dot_x + 7, y + 9))
+
+    hint = font_tiny.render("[Tab] Expand Panel", True, (130, 195, 235))
+    surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, y + 16)))
+
+
+def _draw_full_telemetry_dashboard(
+    surface: pygame.Surface,
+    y: int,
+    h: int,
+    info1: Dict[str, Any],
+    info2: Dict[str, Any],
+    agent1: Any,
+    agent2: Any,
+    char1: str,
+    char2: str,
+    arena_display_name: str,
+    speed_index: int,
+    font_small: pygame.font.Font,
+    font_tiny: pygame.font.Font,
+) -> None:
+    """Draw the 180px dark-glass telemetry dashboard with two fighter columns."""
+    # Dark glass backdrop (80% opacity = alpha 204, rounded top corners, 1px cyan top border)
+    glass = _get_cached_panel_surf("top_glass", SCREEN_WIDTH, h, (14, 19, 32, 204), 12)
+    surface.blit(glass, (0, y))
+    pygame.draw.line(surface, (0, 215, 255), (10, y), (SCREEN_WIDTH - 10, y), 1)
+
+    # Slim top telemetry header bar (20px) inside the 180px panel
+    speed_label, _ = SPEED_OPTIONS[speed_index]
+    hdr_left = font_tiny.render(f"ARENA: {arena_display_name.upper()}", True, (150, 205, 255))
+    hdr_mid = font_tiny.render("[Tab] Collapse Panel  ·  [Space] Pause  ·  [F2] Debug  ·  [F3] Prof  ·  [F4] Align", True, LIGHT_GREY)
+    hdr_right = font_tiny.render(f"SPEED: {speed_label} (< / >)", True, TIMER_COLOUR)
+    surface.blit(hdr_left, (16, y + 4))
+    surface.blit(hdr_mid, hdr_mid.get_rect(center=(SCREEN_WIDTH // 2, y + 10)))
+    surface.blit(hdr_right, (SCREEN_WIDTH - hdr_right.get_width() - 16, y + 4))
+
+    col_y = y + 22
+    col_h = h - 26
+    _draw_ai_panel(
+        surface, PANEL1_X, col_y, PANEL_WIDTH, col_h,
+        info1, getattr(agent1, "name", char1), char1,
+        getattr(agent1, "difficulty", "LOW"),
+        font_small, font_tiny, player_num=1
+    )
+    _draw_ai_panel(
+        surface, PANEL2_X, col_y, PANEL_WIDTH, col_h,
+        info2, getattr(agent2, "name", char2), char2,
+        getattr(agent2, "difficulty", "LOW"),
+        font_small, font_tiny, player_num=2
+    )
+
+
+def _draw_ai_panel(
+    surface: pygame.Surface,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    info: Dict[str, Any],
+    name: str,
+    char_name: str,
+    difficulty: str,
+    font_small: pygame.font.Font,
+    font_tiny: pygame.font.Font,
+    player_num: int = 1,
+):
+    """Draw one fighter telemetry column inside the bottom dashboard."""
     accent_col = P1_COLOUR if player_num == 1 else P2_COLOUR
-    side_label = f"P{player_num}: {name}" if name != char_name else f"P{player_num}: {char_name}"
+    palette = PRIMARY_PALETTES.get(char_name, {})
+    archetype = palette.get("subtitle", palette.get("title", char_name))
 
-    # Rounded container
-    panel_surf = pygame.Surface((width, height), pygame.SRCALPHA)
-    panel_surf.fill((18, 22, 38, 235))
-    surface.blit(panel_surf, (x, y))
-    pygame.draw.rect(surface, accent_col, (x, y, width, height), 1, border_radius=6)
+    # Card container
+    card = _get_cached_panel_surf("card", width, height, (20, 26, 44, 210), 8)
+    surface.blit(card, (x, y))
+    pygame.draw.rect(surface, accent_col, (x, y, width, height), 1, border_radius=8)
 
-    # Header: Name and Latency
-    label = font_small.render(side_label, True, accent_col)
-    surface.blit(label, (x + 10, y + 6))
+    # 1. Portrait (36x36) + Name + Archetype + Difficulty Badge
+    port_sz = 36
+    port_rect = pygame.Rect(x + 8, y + 6, port_sz, port_sz)
+    port_img = assets.get_portrait(char_name, size=(port_sz, port_sz), flip_h=(player_num == 2))
+    surface.blit(port_img, port_rect.topleft)
+    pygame.draw.rect(surface, accent_col, port_rect, 1, border_radius=4)
 
-    ms = info.get("decision_ms", 0.0)
-    time_text = font_tiny.render(f"{ms:.1f}ms", True, LIGHT_GREY)
-    surface.blit(time_text, (x + width - 55, y + 8))
+    title_lbl = font_small.render(f"P{player_num} {char_name.upper()}", True, WHITE)
+    surface.blit(title_lbl, (port_rect.right + 8, y + 5))
 
-    # Subheader: Action & Opponent Prediction
-    action_name = info["action"].name
-    act_text = font_tiny.render(f"Move: {action_name}", True, TIMER_COLOUR)
-    surface.blit(act_text, (x + 10, y + 26))
+    arch_lbl = font_tiny.render(f"{archetype} · [{difficulty}]", True, (165, 180, 205))
+    surface.blit(arch_lbl, (port_rect.right + 8, y + 23))
 
-    if info.get("opp_model_prediction"):
-        pred = info.get("opp_model_prediction", "?")
-        dot_col = HEALTH_GREEN if info.get("opp_model_accurate") else (240, 180, 50)
-        pygame.draw.circle(surface, dot_col, (x + width - 110, y + 31), 4)
-        pred_text = font_tiny.render(f"Read: {pred}", True, dot_col)
-        surface.blit(pred_text, (x + width - 100, y + 26))
+    # 2. Active Move Badge (Colored Pill)
+    cur_action = info.get("action", Action.IDLE)
+    pill_col = _action_category_color(cur_action)
+    pill_w = 104
+    pill_rect = pygame.Rect(x + 215, y + 7, pill_w, 20)
+    pygame.draw.rect(surface, pill_col, pill_rect, border_radius=5)
+    pygame.draw.rect(surface, (235, 240, 255), pill_rect, 1, border_radius=5)
+    move_txt = font_tiny.render(cur_action.name[:12], True, WHITE)
+    surface.blit(move_txt, move_txt.get_rect(center=pill_rect.center))
 
-    # Left Column: Confidence Bars
-    col1_x = x + 10
-    bar_y = y + 46
-    bar_width = 72
-    bar_height = 11
+    # 3. Latency Indicator ("0.4ms / 60 FPS") with green status dot
+    ms = max(0.2, float(info.get("decision_ms", 0.4)))
+    lat_str = f"{ms:.1f}ms / 60 FPS"
+    lat_surf = font_tiny.render(lat_str, True, (200, 215, 235))
+    lx = x + width - lat_surf.get_width() - 10
+    pygame.draw.circle(surface, (46, 215, 115), (lx - 8, y + 16), 4)
+    surface.blit(lat_surf, (lx, y + 10))
 
+    # Divider under header
+    pygame.draw.line(surface, (45, 58, 88), (x + 8, y + 45), (x + width - 8, y + 45), 1)
+
+    # 4. Left Sub-Column: Top 4 Actions with Animated Easing Bars + Gold Border & Arrow on Chosen
     short_action_names = {
         "LIGHT_KICK": "L.KICK",
         "HEAVY_KICK": "H.KICK",
@@ -796,68 +997,113 @@ def _draw_ai_panel(surface: pygame.Surface, x: int, y: int, width: int, height: 
         "SPECIAL_FORWARD": "SP.FWD",
         "SPECIAL_BACK": "SP.BCK",
         "SPECIAL_DOWN": "SP.DWN",
+        "SHIELD_FRONT": "SH.FRT",
+        "SHIELD_BACK": "SH.BCK",
     }
+
+    col1_x = x + 18
+    bar_y0 = y + 51
+    bar_w = 80
+    bar_h = 13
 
     choices = info.get("top_choices", [])[:4]
-    for i, (action, prob) in enumerate(choices):
-        by = bar_y + i * 20
-        if by + bar_height > y + height - 6:
+    for i, (act_item, prob) in enumerate(choices):
+        by = bar_y0 + i * 24
+        if by + bar_h > y + height - 4:
             break
+        is_chosen = (act_item == cur_action)
 
-        short_name = short_action_names.get(action.name, action.name[:7])
-        act_lbl = font_tiny.render(short_name, True, LIGHT_GREY)
-        surface.blit(act_lbl, (col1_x, by))
+        # Small gold selection arrow for the chosen action
+        if is_chosen:
+            arrow_pts = [(x + 7, by + 3), (x + 14, by + 6), (x + 7, by + 10)]
+            pygame.draw.polygon(surface, (255, 215, 40), arrow_pts)
 
-        bx = col1_x + 66
-        pygame.draw.rect(surface, DARK_GREY, (bx, by + 1, bar_width, bar_height), border_radius=2)
-        fill_w = int(bar_width * min(prob, 1.0))
+        short_name = short_action_names.get(act_item.name, act_item.name[:7])
+        lbl_col = (255, 225, 80) if is_chosen else LIGHT_GREY
+        act_lbl = font_tiny.render(short_name, True, lbl_col)
+        surface.blit(act_lbl, (col1_x, by + 1))
+
+        bx = col1_x + 56
+        bar_rect = pygame.Rect(bx, by, bar_w, bar_h)
+        pygame.draw.rect(surface, (30, 36, 54), bar_rect, border_radius=3)
+
+        fill_w = int(bar_w * max(0.0, min(1.0, prob)))
         if fill_w > 0:
-            fill_col = HEALTH_GREEN if prob > 0.4 else TIMER_COLOUR
-            pygame.draw.rect(surface, fill_col, (bx, by + 1, fill_w, bar_height), border_radius=2)
+            fill_col = _action_category_color(act_item) if is_chosen else (65, 155, 215)
+            pygame.draw.rect(surface, fill_col, (bx, by, fill_w, bar_h), border_radius=3)
 
-        pct = font_tiny.render(f"{prob:.0%}", True, WHITE)
-        surface.blit(pct, (bx + bar_width + 4, by - 1))
+        if is_chosen:
+            pygame.draw.rect(surface, (255, 215, 40), bar_rect, 2, border_radius=3)
+        else:
+            pygame.draw.rect(surface, (60, 70, 95), bar_rect, 1, border_radius=3)
 
-    # Right Column: Strategy, Explanation, Evaluation
-    col2_x = x + 195
-    col2_y = y + 46
-    col2_w = width - 205
+        pct_lbl = font_tiny.render(f"{prob:.0%}", True, WHITE if is_chosen else LIGHT_GREY)
+        surface.blit(pct_lbl, (bx + bar_w + 5, by + 1))
 
+    # 5. Right Sub-Column: White Explanation + Italic Yellow Commentary + Eval Bar & Chips
+    col2_x = x + 194
+    col2_w = width - 202
+    col2_y = y + 50
+
+    # Clean white explanation sentence
     explanation = info.get("explanation", "")
-    _draw_wrapped_text(surface, explanation, font_tiny, LIGHT_GREY, col2_x, col2_y, col2_w, 2)
+    _draw_wrapped_text(surface, explanation, font_tiny, WHITE, col2_x, col2_y, col2_w, 2)
 
+    # Tactical comment in italic yellow
     comment = info.get("commentary", "")
     if comment:
-        comment_text = font_tiny.render(f'"{comment[:38]}"', True, TIMER_COLOUR)
-        surface.blit(comment_text, (col2_x, col2_y + 36))
+        font_italic = _get_italic_font()
+        c_surf = font_italic.render(f'"{comment[:44]}"', True, (255, 225, 75))
+        surface.blit(c_surf, (col2_x, col2_y + 32))
 
-    score = info.get("eval_score", 0.0)
-    score_col = HEALTH_GREEN if score >= 0 else (240, 80, 80)
-    score_text = font_tiny.render(f"Eval: {score:+.1f}", True, score_col)
-    surface.blit(score_text, (col2_x, col2_y + 54))
+    # Evaluation Score Bar (-1.0 to +1.0) with center mark
+    eval_y = col2_y + 52
+    eval_score = max(-1.0, min(1.0, float(info.get("eval_score", 0.0))))
+    ev_lbl = font_tiny.render(f"WIN PROB {eval_score:+.2f}", True, (185, 200, 225))
+    surface.blit(ev_lbl, (col2_x, eval_y))
 
-    contrib_labels = {
-        "closeness": "Close",
-        "safe_distance": "Spacing",
-        "corner_avoid": "Corner",
-        "health_lead": "Health",
-        "block_punish": "Punish",
-        "whiff_punish": "Whiff",
-    }
-    contribs = info.get("contributions", {})
-    if contribs:
-        sorted_contribs = sorted(contribs.items(), key=lambda kv: abs(kv[1]), reverse=True)[:3]
-        for idx, (fname, val) in enumerate(sorted_contribs):
-            c_col = HEALTH_GREEN if val > 0 else (240, 80, 80)
-            short_f = contrib_labels.get(fname, fname[:7])
-            ct = font_tiny.render(f"{short_f}:{val:+.1f}", True, c_col)
-            surface.blit(ct, (col2_x + idx * 92, col2_y + 72))
+    ev_bar_x = col2_x + 96
+    ev_bar_w = max(80, col2_w - 100)
+    ev_bar_h = 10
+    ev_rect = pygame.Rect(ev_bar_x, eval_y + 1, ev_bar_w, ev_bar_h)
+    pygame.draw.rect(surface, (26, 32, 48), ev_rect, border_radius=3)
+
+    mid_x = ev_bar_x + ev_bar_w // 2
+    half_w = ev_bar_w // 2
+    span = int(abs(eval_score) * half_w)
+    if span > 0:
+        if eval_score >= 0:
+            pygame.draw.rect(surface, (46, 210, 110), (mid_x, eval_y + 2, span, ev_bar_h - 2), border_radius=2)
+        else:
+            pygame.draw.rect(surface, (235, 70, 70), (mid_x - span, eval_y + 2, span, ev_bar_h - 2), border_radius=2)
+
+    pygame.draw.rect(surface, (85, 100, 130), ev_rect, 1, border_radius=3)
+    # Center mark line
+    pygame.draw.line(surface, WHITE, (mid_x, eval_y - 1), (mid_x, eval_y + ev_bar_h + 2), 2)
+
+    # Top 3 Contributing Factor Chips (+12% spacing, +8% frame adv, -5% low HP)
+    chips = info.get("eval_chips", ["+10% spacing", "+4% frame adv", "+2% tempo"])[:3]
+    chip_x = col2_x
+    chip_y = eval_y + 18
+    for chip_str in chips:
+        is_pos = not chip_str.strip().startswith("-")
+        c_border = (55, 195, 115) if is_pos else (225, 80, 80)
+        c_bg = (22, 48, 38) if is_pos else (54, 24, 30)
+        c_txt = font_tiny.render(chip_str, True, (220, 245, 230) if is_pos else (255, 210, 210))
+        cw = c_txt.get_width() + 10
+        ch = 16
+        if chip_x + cw > x + width - 6:
+            break
+        c_rect = pygame.Rect(chip_x, chip_y, cw, ch)
+        pygame.draw.rect(surface, c_bg, c_rect, border_radius=4)
+        pygame.draw.rect(surface, c_border, c_rect, 1, border_radius=4)
+        surface.blit(c_txt, c_txt.get_rect(center=c_rect.center))
+        chip_x += cw + 5
 
 
 def _draw_wrapped_text(surface: pygame.Surface, text: str, font: pygame.font.Font,
                        colour: Tuple[int, int, int], x: int, y: int,
                        max_width: int, max_lines: int):
-    """Draw text wrapped to fit within max_width, up to max_lines."""
     words = text.split()
     lines = []
     current_line = ""
@@ -877,7 +1123,7 @@ def _draw_wrapped_text(surface: pygame.Surface, text: str, font: pygame.font.Fon
 
     for i, line in enumerate(lines):
         rendered = font.render(line, True, colour)
-        surface.blit(rendered, (x, y + i * 15))
+        surface.blit(rendered, (x, y + i * 14))
 
 
 def _draw_profiling(
@@ -887,7 +1133,7 @@ def _draw_profiling(
     font_tiny: pygame.font.Font,
     state: Optional[Any] = None,
 ):
-    """Draw the F3 debug & profiling overlay showing mode, health zone, reaction, mistake %, block %, and timing."""
+    """Draw the F3 debug & profiling overlay."""
     from backend.ai.difficulty import adrenaline_level, effective_profile
 
     overlay = pygame.Surface((350, 145), pygame.SRCALPHA)
@@ -936,8 +1182,9 @@ def _show_round_intro_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                              char1: str, char2: str, is_mirror: bool,
                              info1: Dict[str, Any], info2: Dict[str, Any],
                              agent1: Any, agent2: Any, arena_display_name: str,
-                             speed_index: int):
-    """Display 'ROUND X' followed by 'FIGHT!' over the arena background."""
+                             speed_index: int, arena_name: str = "arena_neon_rooftop",
+                             camera: Optional[CameraState] = None,
+                             panel_collapsed: bool = False):
     _, speed_mult = SPEED_OPTIONS[speed_index]
     frames1 = int(24 * (1.0 / max(0.5, speed_mult)))
     for _ in range(frames1):
@@ -948,7 +1195,8 @@ def _show_round_intro_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
             surface, state, arena_bg, arena_display_name,
             info1, info2, font_banner, font_medium, font_small, font_tiny,
             char1, char2, is_mirror, agent1, agent2,
-            0, 0, speed_index, False, False, 1.0, 1.0, 0, 0, [], []
+            0, 0, speed_index, False, False, 1.0, 1.0, 0, 0, [], [],
+            arena_name=arena_name, camera=camera, panel_collapsed=panel_collapsed
         )
         _draw_center_banner_viewer(surface, f"ROUND {round_num}", font_banner, (255, 220, 80))
         _flip_display()
@@ -963,7 +1211,8 @@ def _show_round_intro_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
             surface, state, arena_bg, arena_display_name,
             info1, info2, font_banner, font_medium, font_small, font_tiny,
             char1, char2, is_mirror, agent1, agent2,
-            0, 0, speed_index, False, False, 1.0, 1.0, 0, 0, [], []
+            0, 0, speed_index, False, False, 1.0, 1.0, 0, 0, [], [],
+            arena_name=arena_name, camera=camera, panel_collapsed=panel_collapsed
         )
         _draw_center_banner_viewer(surface, "FIGHT!", font_banner, (255, 60, 60))
         _flip_display()
@@ -977,8 +1226,9 @@ def _show_round_banner_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                               font_tiny: pygame.font.Font, char1: str, char2: str,
                               is_mirror: bool, info1: Dict[str, Any], info2: Dict[str, Any],
                               agent1: Any, agent2: Any, trail1: float, trail2: float,
-                              speed_index: int):
-    """Display KO, TIME UP, or DRAW banner over the arena scene."""
+                              speed_index: int, arena_name: str = "arena_neon_rooftop",
+                              camera: Optional[CameraState] = None,
+                              panel_collapsed: bool = False):
     banner_text = "K.O."
     banner_col = (255, 50, 50)
     if banner_type == "TIME":
@@ -992,11 +1242,14 @@ def _show_round_banner_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
+        if camera is not None:
+            camera.zoom += (1.0 - camera.zoom) * 0.15
         _draw_full_frame(
             surface, state, arena_bg, arena_display_name,
             info1, info2, font_banner, font_medium, font_small, font_tiny,
             char1, char2, is_mirror, agent1, agent2,
-            0, 0, speed_index, False, False, trail1, trail2, 0, 0, [], []
+            0, 0, speed_index, False, False, trail1, trail2, 0, 0, [], [],
+            arena_name=arena_name, camera=camera, panel_collapsed=panel_collapsed
         )
         _draw_center_banner_viewer(surface, banner_text, font_banner, banner_col)
         _flip_display()
@@ -1010,26 +1263,42 @@ def _slow_motion_ko_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
                            font_small: pygame.font.Font, font_tiny: pygame.font.Font,
                            char1: str, char2: str, is_mirror: bool,
                            agent1: Any, agent2: Any, trail1: float, trail2: float,
-                           speed_mult: float):
-    """Dramatic slow-motion freeze on deciding round KO."""
-    half_fps = max(15, int(FPS * speed_mult * 0.5))
-    for _ in range(25):
+                           speed_mult: float, arena_name: str = "arena_neon_rooftop",
+                           camera: Optional[CameraState] = None,
+                           panel_collapsed: bool = False):
+    """KO slow-motion (0.3x speed for 30 frames) zooming in on the defeated fighter."""
+    slow_fps = max(12, int(FPS * speed_mult * 0.3))
+    loser = state.fighter1 if state.fighter1.health <= state.fighter2.health else state.fighter2
+    ko_x = ARENA_OFFSET_X + loser.x
+    viewport_h = SCREEN_HEIGHT - (COLLAPSED_PANEL_HEIGHT if panel_collapsed else FULL_PANEL_HEIGHT)
+    floor_y = get_arena_floor_y(arena_name, viewport_h)
+
+    for frame_i in range(30):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
+        if camera is not None:
+            camera.update(
+                ARENA_OFFSET_X + state.fighter1.x,
+                ARENA_OFFSET_X + state.fighter2.x,
+                floor_y,
+                ko_target_x=ko_x,
+                lerp_t=0.16,
+            )
+        flash = 3 if frame_i < 3 else 0
         _draw_full_frame(
             surface, state, arena_bg, arena_display_name,
             info1, info2, font_large, font_medium, font_small, font_tiny,
             char1, char2, is_mirror, agent1, agent2,
-            0, 0, 2, False, False, trail1, trail2, 0, 0, [], []
+            flash, 0, 2, False, False, trail1, trail2, 0, 0, [], [],
+            arena_name=arena_name, camera=camera, panel_collapsed=panel_collapsed
         )
         _flip_display()
-        clock.tick(half_fps)
+        clock.tick(slow_fps)
 
 
 def _draw_center_banner_viewer(surface: pygame.Surface, text: str,
                                font: pygame.font.Font, colour: Tuple[int, int, int]):
-    """Draw high-contrast banner in the center of the fight viewport."""
     center_y = 200
     banner_surf = font.render(text, True, colour)
     rect = banner_surf.get_rect(center=(SCREEN_WIDTH // 2, center_y))

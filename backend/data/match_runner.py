@@ -10,7 +10,8 @@ from backend.ai.adapter import observation_for
 from backend.engine.step import make_initial_state, new_round, step
 
 
-def run_match(agent1, agent2, seed=None, character1="Golden", character2="Golden"):
+def run_match(agent1, agent2, seed=None, character1="Golden", character2="Golden",
+              rules=None, record_frames=True):
     """Run a full match (up to 3 rounds) between two agents.
 
     Returns a dictionary with:
@@ -25,7 +26,8 @@ def run_match(agent1, agent2, seed=None, character1="Golden", character2="Golden
     if agent2.personality:
         character2 = agent2.personality.name
 
-    state = make_initial_state(character1, character2)
+    match_seed = seed if seed is not None else 42
+    state = make_initial_state(character1, character2, rules=rules, seed=match_seed)
     frames = []
     rounds = []
     round_num = 1
@@ -46,18 +48,19 @@ def run_match(agent1, agent2, seed=None, character1="Golden", character2="Golden
         # Step the engine forward one frame
         new_state = step(state, action1, action2)
 
-        # Record this frame
-        record = _make_frame_record(
-            state=state,
-            obs1=obs1,
-            action1=action1,
-            action2=action2,
-            agent1=agent1,
-            agent2=agent2,
-            seed=seed,
-            round_num=round_num,
-        )
-        frames.append(record)
+        # Record this frame if requested
+        if record_frames:
+            record = _make_frame_record(
+                state=state,
+                obs1=obs1,
+                action1=action1,
+                action2=action2,
+                agent1=agent1,
+                agent2=agent2,
+                seed=seed,
+                round_num=round_num,
+            )
+            frames.append(record)
 
         # Let agents observe what happened
         agent1.observe(obs1, action1, action2)

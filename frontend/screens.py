@@ -30,6 +30,42 @@ from frontend.colours import (
 )
 from frontend.theme import P1_COLOUR, P2_COLOUR, PRIMARY_PALETTES, ALTERNATE_PALETTES, get_fighter_palette
 from backend.data.results_db import results_db
+from frontend.audio import audio
+from frontend.fantasy_ui import (
+    BG_DARK,
+    PANEL_DARK,
+    PANEL_DARK_ALT,
+    PANEL_BORDER,
+    PANEL_BORDER_LIGHT,
+    PANEL_BORDER_GLOW,
+    GOLD_TEXT,
+    GOLD_BRIGHT,
+    EMBER_ORANGE,
+    SUCCESS_GREEN,
+    CRIMSON_TAG,
+    SILVER_TAG,
+    BRONZE_TAG,
+    TEXT_WHITE,
+    TEXT_MUTED,
+    TEXT_GOLD_MUTED,
+    get_font,
+    draw_dark_fantasy_backdrop,
+    draw_obsidian_card,
+    draw_dark_fantasy_menu_buttons,
+    draw_description_pill,
+    draw_segmented_bar,
+    draw_emblem_icon,
+    draw_tier_badge,
+    draw_wax_seal_stamp,
+)
+
+
+def _safe_set_cursor(cursor):
+    """Safely set mouse cursor, ignoring environments without system cursor support."""
+    try:
+        pygame.mouse.set_cursor(cursor)
+    except Exception:
+        pass
 
 
 def _wait_for_key_or_click():
@@ -49,14 +85,14 @@ def _draw_title(surface, text, font, y=50):
     surface.blit(title, title.get_rect(midtop=(SCREEN_WIDTH // 2, y)))
 
 
-def _draw_menu_items(surface, items, selected, font, start_y=180):
+def _draw_menu_items(surface, items, selected, font, start_y=180, step_y=50):
     """Draw a vertical list of menu items, highlighting the selected one."""
     for i, item in enumerate(items):
         colour = WHITE if i == selected else LIGHT_GREY
         bg = MENU_HIGHLIGHT if i == selected else None
 
         text = font.render(item, True, colour)
-        rect = text.get_rect(midtop=(SCREEN_WIDTH // 2, start_y + i * 50))
+        rect = text.get_rect(midtop=(SCREEN_WIDTH // 2, start_y + i * step_y))
 
         if bg:
             bg_rect = rect.inflate(40, 10)
@@ -65,25 +101,21 @@ def _draw_menu_items(surface, items, selected, font, start_y=180):
         surface.blit(text, rect)
 
 
-def _draw_menu_items_clickable(surface, items, selected, font, start_y=180):
-    """Draw menu items and return a list of clickable rects (one per item).
+def _draw_menu_items_clickable(surface, items, selected, font, start_y=180, step_y=50, inflate_x=50, inflate_y=10, btn_w=None, btn_h=None):
+    """Draw clean menu items matching original UI with interactive mouse-click hitboxes.
 
-    Same look as _draw_menu_items, but returns rects so the caller
-    can check mouse clicks against them.
+    Unselected: Clean LIGHT_GREY text without borders or capsule boxes.
+    Selected/Hovered: Clean solid MENU_HIGHLIGHT rounded rectangle with crisp WHITE text.
     """
     rects = []
     for i, item in enumerate(items):
         colour = WHITE if i == selected else LIGHT_GREY
-        bg = MENU_HIGHLIGHT if i == selected else None
-
         text = font.render(item, True, colour)
-        rect = text.get_rect(midtop=(SCREEN_WIDTH // 2, start_y + i * 50))
+        rect = text.get_rect(midtop=(SCREEN_WIDTH // 2, start_y + i * step_y))
 
-        # The clickable area is the inflated background rect
-        click_rect = rect.inflate(40, 10)
-
-        if bg:
-            pygame.draw.rect(surface, bg, click_rect, border_radius=5)
+        click_rect = rect.inflate(inflate_x, inflate_y)
+        if i == selected:
+            pygame.draw.rect(surface, MENU_HIGHLIGHT, click_rect, border_radius=5)
 
         surface.blit(text, rect)
         rects.append(click_rect)
@@ -148,57 +180,316 @@ def intro_screen(surface, clock):
 
 
 def main_menu(surface, clock):
-    """Show the main menu on the blurry intro image and return the chosen option.
+    """Show the streamlined 6-item welcome page and return the chosen option.
 
-    Returns: "start", "ai_fight", "settings", "statistics", "manual", "quit", or "intro".
+    Returns: "campaign", "start", "tutorial", "hq", "options", "quit", or "intro".
     """
+    audio.play_music("music_menu")
     font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
-    font_medium = pygame.font.Font(None, FONT_SIZE_MEDIUM)
+    font_menu = pygame.font.Font(None, 34)
+    font_desc = pygame.font.Font(None, 21)
 
     bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
 
-    items = ["Start Match", "AI Model Fight", "Model Insights", "Settings", "Statistics", "Manual", "Quit"]
-    keys = ["start", "ai_fight", "insights", "settings", "statistics", "manual", "quit"]
+    items = [
+        "Campaign",
+        "Start Match",
+        "Tutorial Room",
+        "Fighter HQ",
+        "Settings & Info",
+        "Quit",
+    ]
+    keys = [
+        "campaign",
+        "start",
+        "tutorial",
+        "hq",
+        "options",
+        "quit",
+    ]
+    descs = {
+        "campaign": "Embark on the 8-Battle Sovereign Tournament with lore & scaling bosses",
+        "start": "Fight in 1v1 duels, Arena Rumble battle royale, or spectate AI matches",
+        "tutorial": "Master warrior movements, attacks, defenses, combos, and specials against an immortal dummy",
+        "hq": "Warrior stat upgrades, active bounty contracts, trophy achievements, and battle statistics",
+        "options": "Sound volume sliders, match options, comprehensive combat manual, and AI model insights",
+        "quit": "Exit Arena-AI to desktop",
+    }
     selected = 0
-    item_rects = []
+    item_rects = [
+        pygame.Rect(SCREEN_WIDTH // 2 - 170, 160 + i * 54, 340, 42)
+        for i in range(len(items))
+    ]
 
     while True:
+        # Check mouse hover on every frame for instant response
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, rect in enumerate(item_rects):
+            if rect.collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if selected != hovered_idx:
+                selected = hovered_idx
+                audio.play_sfx("menu_hover")
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_HAND)
+        else:
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                 return "quit"
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_UP:
+                    audio.play_sfx("menu_hover")
                     selected = (selected - 1) % len(items)
                 elif event.key == pygame.K_DOWN:
+                    audio.play_sfx("menu_hover")
                     selected = (selected + 1) % len(items)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    audio.play_sfx("menu_select")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return keys[selected]
                 elif event.key == pygame.K_ESCAPE:
-                    # Esc returns to the normal intro screen
+                    audio.play_sfx("menu_back")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return "intro"
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                # Check if a menu item was clicked
                 for i, rect in enumerate(item_rects):
                     if rect.collidepoint(event.pos):
+                        audio.play_sfx("menu_select")
+                        _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                         return keys[i]
-            if event.type == pygame.MOUSEMOTION:
-                # Highlight the item under the mouse
-                for i, rect in enumerate(item_rects):
-                    if rect.collidepoint(event.pos):
-                        selected = i
 
         # Background image with a dark readability scrim
         surface.blit(bg_img, (0, 0))
         scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        scrim.fill((0, 0, 0, 95))
+        scrim.fill((0, 0, 0, 115))
         surface.blit(scrim, (0, 0))
 
         _draw_title(surface, "ARENA-AI", font_large, y=55)
 
-        # Draw menu items and collect their rects
+        # Draw clean 6-item main menu
         item_rects = _draw_menu_items_clickable(
-            surface, items, selected, font_medium, start_y=145
+            surface, items, selected, font_menu, start_y=160, step_y=54, inflate_x=60, inflate_y=10
         )
+
+        cur_key = keys[selected]
+        desc_surf = font_desc.render(descs[cur_key], True, (215, 220, 235))
+        surface.blit(desc_surf, desc_surf.get_rect(midtop=(SCREEN_WIDTH // 2, 510)))
+
+        hint = pygame.font.Font(None, 18).render(
+            "Up/Down select  |  Enter confirm  |  Esc intro", True, LIGHT_GREY
+        )
+        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 545)))
+
+        if pygame.display.get_surface() is not None:
+            pygame.display.flip()
+        clock.tick(30)
+
+
+def fighter_hq_menu(surface, clock):
+    """Fighter HQ hub submenu: Upgrades, Missions, Trophies, Statistics."""
+    audio.play_music("music_menu")
+    font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
+    font_menu = pygame.font.Font(None, 30)
+    font_desc = pygame.font.Font(None, 20)
+
+    bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+    items = [
+        "Warrior Upgrades",
+        "Missions & Contracts",
+        "Trophy Showcase",
+        "Combat Statistics",
+        "Back to Main Menu",
+    ]
+    keys = [
+        "upgrades",
+        "missions",
+        "trophies",
+        "statistics",
+        "back",
+    ]
+    descs = {
+        "upgrades": "Spend earned gold coins to boost warrior Health pool, Attack power, Speed, and Guard",
+        "missions": "Review and claim gold rewards for battle feats, combo achievements, and combat milestones",
+        "trophies": "Gallery of 18 unlockable trophies, combat accolades, and campaign completion badges",
+        "statistics": "Detailed match history, win/loss records, fighter usage, and combat analytics",
+        "back": "Return to the main menu",
+    }
+    selected = 0
+    item_rects = [
+        pygame.Rect(SCREEN_WIDTH // 2 - 170, 175 + i * 52, 340, 42)
+        for i in range(len(items))
+    ]
+
+    while True:
+        # Check mouse hover on every frame for instant response
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, rect in enumerate(item_rects):
+            if rect.collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if selected != hovered_idx:
+                selected = hovered_idx
+                audio.play_sfx("menu_hover")
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_HAND)
+        else:
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                return "back"
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP:
+                    audio.play_sfx("menu_hover")
+                    selected = (selected - 1) % len(items)
+                elif event.key == pygame.K_DOWN:
+                    audio.play_sfx("menu_hover")
+                    selected = (selected + 1) % len(items)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    audio.play_sfx("menu_select")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                    return keys[selected]
+                elif event.key == pygame.K_ESCAPE:
+                    audio.play_sfx("menu_back")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                    return "back"
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                for i, rect in enumerate(item_rects):
+                    if rect.collidepoint(event.pos):
+                        audio.play_sfx("menu_select")
+                        _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                        return keys[i]
+
+        surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 115))
+        surface.blit(scrim, (0, 0))
+
+        _draw_title(surface, "FIGHTER HQ", font_large, y=55)
+
+        item_rects = _draw_menu_items_clickable(
+            surface, items, selected, font_menu, start_y=175, step_y=52, inflate_x=60, inflate_y=10
+        )
+
+        cur_key = keys[selected]
+        desc_surf = font_desc.render(descs[cur_key], True, (215, 220, 235))
+        surface.blit(desc_surf, desc_surf.get_rect(midtop=(SCREEN_WIDTH // 2, 475)))
+
+        hint = pygame.font.Font(None, 18).render(
+            "Up/Down select  |  Enter confirm  |  Esc back", True, LIGHT_GREY
+        )
+        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 545)))
+
+        if pygame.display.get_surface() is not None:
+            pygame.display.flip()
+        clock.tick(30)
+
+
+def options_info_menu(surface, clock):
+    """Options and Information hub submenu: Settings, Manual, Model Insights."""
+    audio.play_music("music_menu")
+    font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
+    font_menu = pygame.font.Font(None, 30)
+    font_desc = pygame.font.Font(None, 20)
+
+    bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+    items = [
+        "Game & Audio Settings",
+        "Move List & Manual",
+        "AI Model Insights",
+        "Back to Main Menu",
+    ]
+    keys = [
+        "settings",
+        "manual",
+        "insights",
+        "back",
+    ]
+    descs = {
+        "settings": "Adjust Master, SFX, and Music volume sliders, mute toggle, and match options",
+        "manual": "Browse character special moves, key commands, frame data, and combat mechanics",
+        "insights": "Inspect AI neural network models, decision breakdown, and training telemetry",
+        "back": "Return to the main menu",
+    }
+    selected = 0
+    item_rects = [
+        pygame.Rect(SCREEN_WIDTH // 2 - 170, 195 + i * 54, 340, 42)
+        for i in range(len(items))
+    ]
+
+    while True:
+        # Check mouse hover on every frame for instant response
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, rect in enumerate(item_rects):
+            if rect.collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if selected != hovered_idx:
+                selected = hovered_idx
+                audio.play_sfx("menu_hover")
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_HAND)
+        else:
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                return "back"
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP:
+                    audio.play_sfx("menu_hover")
+                    selected = (selected - 1) % len(items)
+                elif event.key == pygame.K_DOWN:
+                    audio.play_sfx("menu_hover")
+                    selected = (selected + 1) % len(items)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    audio.play_sfx("menu_select")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                    return keys[selected]
+                elif event.key == pygame.K_ESCAPE:
+                    audio.play_sfx("menu_back")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                    return "back"
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                for i, rect in enumerate(item_rects):
+                    if rect.collidepoint(event.pos):
+                        audio.play_sfx("menu_select")
+                        _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                        return keys[i]
+
+        surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 115))
+        surface.blit(scrim, (0, 0))
+
+        _draw_title(surface, "SETTINGS & INFO", font_large, y=55)
+
+        item_rects = _draw_menu_items_clickable(
+            surface, items, selected, font_menu, start_y=195, step_y=54, inflate_x=60, inflate_y=10
+        )
+
+        cur_key = keys[selected]
+        desc_surf = font_desc.render(descs[cur_key], True, (215, 220, 235))
+        surface.blit(desc_surf, desc_surf.get_rect(midtop=(SCREEN_WIDTH // 2, 455)))
+
+        hint = pygame.font.Font(None, 18).render(
+            "Up/Down select  |  Enter confirm  |  Esc back", True, LIGHT_GREY
+        )
+        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 545)))
 
         if pygame.display.get_surface() is not None:
             pygame.display.flip()
@@ -225,31 +516,54 @@ def character_select(surface, clock, is_p2=False):
     total_width = len(fighters) * card_width
     start_x = (SCREEN_WIDTH - total_width) // 2
     top_y = 120
-    card_rects = []
+
+    card_rects = [
+        pygame.Rect(start_x + i * card_width + card_width // 2 - 75, top_y, 150, card_height)
+        for i in range(len(fighters))
+    ]
 
     while True:
+        # Check mouse hover on every frame for instant response
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, r in enumerate(card_rects):
+            if r.collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if selected != hovered_idx:
+                selected = hovered_idx
+                audio.play_sfx("menu_hover")
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_HAND)
+        else:
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                 return None
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_LEFT:
+                    audio.play_sfx("menu_hover")
                     selected = (selected - 1) % len(fighters)
                 elif event.key == pygame.K_RIGHT:
+                    audio.play_sfx("menu_hover")
                     selected = (selected + 1) % len(fighters)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    audio.play_sfx("menu_select")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return fighters[selected]
                 elif event.key == pygame.K_ESCAPE:
+                    audio.play_sfx("menu_back")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return None
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 for i, r in enumerate(card_rects):
                     if r.collidepoint(event.pos):
-                        if selected == i:
-                            return fighters[selected]
-                        selected = i
-            if event.type == pygame.MOUSEMOTION:
-                for i, r in enumerate(card_rects):
-                    if r.collidepoint(event.pos):
-                        selected = i
+                        audio.play_sfx("menu_select")
+                        _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+                        return fighters[i]
 
         # Background image with a dark readability scrim
         surface.blit(bg_img, (0, 0))
@@ -276,43 +590,31 @@ def character_select(surface, clock, is_p2=False):
                 portrait = assets.get_portrait(name, size=(130, 170), flip_h=is_p2)
                 surface.blit(portrait, p_rect)
             else:
-                # Random portrait card with gradient and question mark
-                pygame.draw.rect(surface, (35, 40, 55), p_rect, border_radius=4)
+                pygame.draw.rect(surface, (40, 40, 50), p_rect, border_radius=4)
                 q_text = font_large.render("?", True, WHITE)
                 surface.blit(q_text, q_text.get_rect(center=p_rect.center))
 
-            # Inner portrait border
-            pygame.draw.rect(surface, (60, 70, 95), p_rect, 1, border_radius=4)
+            p_border = (80, 120, 200) if is_sel else (50, 50, 60)
+            pygame.draw.rect(surface, p_border, p_rect, 1, border_radius=4)
 
-            # Character name label below portrait
-            name_label = font_medium.render(name, True, WHITE if is_sel else LIGHT_GREY)
-            surface.blit(name_label, name_label.get_rect(midtop=(cx, top_y + 195)))
+            name_col = WHITE if is_sel else LIGHT_GREY
+            name_label = font_medium.render(name, True, name_col)
+            surface.blit(name_label, name_label.get_rect(midtop=(cx, top_y + 190)))
 
-            # Card outer highlight border
-            border_col = (255, 215, 0) if is_sel else (70, 75, 90)
-            border_width = 3 if is_sel else 1
-            pygame.draw.rect(surface, border_col, card_rect, border_width, border_radius=8)
+            if is_sel:
+                pygame.draw.rect(surface, (80, 140, 240), card_rect, 2, border_radius=8)
 
-        # Description of selected fighter
         sel_name = fighters[selected]
         if sel_name in ALL_PERSONALITIES:
             p = ALL_PERSONALITIES[sel_name]
-            full = font_medium.render(p.full_name, True, (255, 230, 120))
-            surface.blit(full, full.get_rect(midtop=(SCREEN_WIDTH // 2, top_y + card_height + 25)))
+            desc_text = f"{p.full_name}: {p.description}"
+        else:
+            desc_text = "Mystery Fighter: picks one of the 4 fighters at random."
+        desc = font_small.render(desc_text, True, LIGHT_GREY)
+        surface.blit(desc, desc.get_rect(midtop=(SCREEN_WIDTH // 2, 385)))
 
-            desc = font_small.render(p.description, True, LIGHT_GREY)
-            surface.blit(desc, desc.get_rect(midtop=(SCREEN_WIDTH // 2, top_y + card_height + 58)))
-        elif sel_name == "Random":
-            full = font_medium.render("Mystery Fighter", True, (255, 230, 120))
-            surface.blit(full, full.get_rect(midtop=(SCREEN_WIDTH // 2, top_y + card_height + 25)))
-
-            desc = font_small.render("Randomly picks one of the four fighters for this match.", True, LIGHT_GREY)
-            surface.blit(desc, desc.get_rect(midtop=(SCREEN_WIDTH // 2, top_y + card_height + 58)))
-
-        # Instructions
-        inst = font_small.render("< / > to browse  |  Enter / Click to confirm  |  Esc to go back",
-                                 True, LIGHT_GREY)
-        surface.blit(inst, inst.get_rect(midtop=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 32)))
+        inst = font_small.render("Left/Right arrows pick  |  Enter confirms  |  Esc back", True, LIGHT_GREY)
+        surface.blit(inst, inst.get_rect(midtop=(SCREEN_WIDTH // 2, 540)))
 
         if pygame.display.get_surface() is not None:
             pygame.display.flip()
@@ -322,8 +624,8 @@ def character_select(surface, clock, is_p2=False):
 def match_type_select(surface, clock):
     """Pick match mode on the blurry intro background.
 
-    Options: 'Me vs AI', 'Random AI', 'AI vs AI'.
-    Returns: 'me_vs_ai', 'random_ai', 'ai_vs_ai', or None if cancelled.
+    Options: 'Me vs AI', 'Random AI', 'Arena Rumble', 'AI vs AI'.
+    Returns: 'me_vs_ai', 'random_ai', 'rumble', 'ai_vs_ai', or None if cancelled.
     """
     font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
     font_medium = pygame.font.Font(None, FONT_SIZE_MEDIUM)
@@ -331,49 +633,80 @@ def match_type_select(surface, clock):
 
     bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
 
-    types = ["Me vs AI", "Random AI", "AI vs AI"]
-    type_keys = ["me_vs_ai", "random_ai", "ai_vs_ai"]
+    types = ["Me vs AI", "Random AI", "Arena Rumble", "AI vs AI"]
+    type_keys = ["me_vs_ai", "random_ai", "rumble", "ai_vs_ai"]
     selected = 0
+    type_rects = [
+        pygame.Rect(SCREEN_WIDTH // 2 - 170, 175 + i * 55, 340, 42)
+        for i in range(len(types))
+    ]
 
     descs = {
-        "me_vs_ai": "Pick your fighter, choose an AI opponent, and test your skills",
+        "me_vs_ai": "Pick your fighter, choose an AI opponent, and test your skills in 1v1 duel",
         "random_ai": "Pick your fighter and battle a randomly chosen AI opponent",
+        "rumble": "Battle Royale mode with shrinking energy zone, building, traps & loot",
         "ai_vs_ai": "Pit two autonomous AI models against each other and watch them battle",
     }
-    type_rects = []
 
     while True:
+        # Check mouse hover on every frame for instant response
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, r in enumerate(type_rects):
+            if r.collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if selected != hovered_idx:
+                selected = hovered_idx
+                audio.play_sfx("menu_hover")
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_HAND)
+        else:
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                 return None
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_UP:
+                    audio.play_sfx("menu_hover")
                     selected = (selected - 1) % len(types)
                 elif event.key == pygame.K_DOWN:
+                    audio.play_sfx("menu_hover")
                     selected = (selected + 1) % len(types)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    audio.play_sfx("menu_select")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return type_keys[selected]
                 elif event.key == pygame.K_ESCAPE:
+                    audio.play_sfx("menu_back")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return None
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 for i, r in enumerate(type_rects):
                     if r.collidepoint(event.pos):
+                        audio.play_sfx("menu_select")
+                        _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                         return type_keys[i]
-            if event.type == pygame.MOUSEMOTION:
-                for i, r in enumerate(type_rects):
-                    if r.collidepoint(event.pos):
-                        selected = i
 
         surface.blit(bg_img, (0, 0))
         scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         scrim.fill((0, 0, 0, 110))
         surface.blit(scrim, (0, 0))
 
-        _draw_title(surface, "Select Match Mode", font_large, y=60)
-        type_rects = _draw_menu_items_clickable(surface, types, selected, font_medium, start_y=180)
+        _draw_title(surface, "Select Match Format", font_large, y=35)
 
-        desc = font_small.render(descs[type_keys[selected]], True, (255, 230, 130))
+        type_rects = _draw_menu_items_clickable(
+            surface, types, selected, font_medium, start_y=175, step_y=55
+        )
+
+        desc = font_small.render(descs[type_keys[selected]], True, LIGHT_GREY)
         surface.blit(desc, desc.get_rect(midtop=(SCREEN_WIDTH // 2, 420)))
+
+        inst = font_small.render("Up/Down select  |  Enter confirm  |  Esc back", True, LIGHT_GREY)
+        surface.blit(inst, inst.get_rect(midtop=(SCREEN_WIDTH // 2, 540)))
 
         if pygame.display.get_surface() is not None:
             pygame.display.flip()
@@ -393,6 +726,10 @@ def difficulty_select(surface, clock):
 
     difficulties = ["LOW", "MEDIUM", "HIGH", "HELL"]
     selected = 0
+    diff_rects = [
+        pygame.Rect(SCREEN_WIDTH // 2 - 170, 175 + i * 55, 340, 42)
+        for i in range(len(difficulties))
+    ]
 
     descs = {
         "LOW": "Slow reactions (24f delay), 30% mistakes, basic 1-ply search",
@@ -400,40 +737,66 @@ def difficulty_select(surface, clock):
         "HIGH": "Fast reactions (7f delay), 5% mistakes, 3-ply search",
         "HELL": "Instant reactions (1f delay), 1% mistakes, Expectimax & Opponent Model on Sky Colosseum!",
     }
-    diff_rects = []
 
     while True:
+        # Check mouse hover on every frame for instant response
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, r in enumerate(diff_rects):
+            if r.collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if selected != hovered_idx:
+                selected = hovered_idx
+                audio.play_sfx("menu_hover")
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_HAND)
+        else:
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                 return None
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_UP:
+                    audio.play_sfx("menu_hover")
                     selected = (selected - 1) % len(difficulties)
                 elif event.key == pygame.K_DOWN:
+                    audio.play_sfx("menu_hover")
                     selected = (selected + 1) % len(difficulties)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    audio.play_sfx("menu_select")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return difficulties[selected]
                 elif event.key == pygame.K_ESCAPE:
+                    audio.play_sfx("menu_back")
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return None
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 for i, r in enumerate(diff_rects):
                     if r.collidepoint(event.pos):
+                        audio.play_sfx("menu_select")
+                        _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                         return difficulties[i]
-            if event.type == pygame.MOUSEMOTION:
-                for i, r in enumerate(diff_rects):
-                    if r.collidepoint(event.pos):
-                        selected = i
 
         surface.blit(bg_img, (0, 0))
         scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         scrim.fill((0, 0, 0, 110))
         surface.blit(scrim, (0, 0))
 
-        _draw_title(surface, "Select Difficulty", font_large, y=60)
-        diff_rects = _draw_menu_items_clickable(surface, difficulties, selected, font_medium, start_y=180)
+        _draw_title(surface, "Select AI Difficulty", font_large, y=35)
 
-        desc = font_small.render(descs[difficulties[selected]], True, (255, 230, 130))
+        diff_rects = _draw_menu_items_clickable(
+            surface, difficulties, selected, font_medium, start_y=175, step_y=55
+        )
+
+        desc = font_small.render(descs[difficulties[selected]], True, LIGHT_GREY)
         surface.blit(desc, desc.get_rect(midtop=(SCREEN_WIDTH // 2, 420)))
+
+        inst = font_small.render("Up/Down select  |  Enter confirm  |  Esc back", True, LIGHT_GREY)
+        surface.blit(inst, inst.get_rect(midtop=(SCREEN_WIDTH // 2, 540)))
 
         if pygame.display.get_surface() is not None:
             pygame.display.flip()
@@ -467,24 +830,48 @@ def pause_screen(surface, clock):
     overlay.fill((0, 0, 0, 160))
 
     base_frame = surface.copy()
-    menu_rects = []
+    menu_rects = [
+        pygame.Rect(SCREEN_WIDTH // 2 - 170, 240 + i * 50, 340, 42)
+        for i in range(len(items))
+    ]
 
     while True:
+        # Check mouse hover on every frame for instant response
+        mouse_pos = pygame.mouse.get_pos()
+        hovered_idx = None
+        for i, r in enumerate(menu_rects):
+            if r.collidepoint(mouse_pos):
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if selected != hovered_idx:
+                selected = hovered_idx
+                audio.play_sfx("menu_hover")
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_HAND)
+        else:
+            _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                 return "quit"
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return "resume"
                 if event.key == pygame.K_UP:
+                    audio.play_sfx("menu_hover")
                     selected = (selected - 1) % len(items)
                 elif event.key == pygame.K_DOWN:
+                    audio.play_sfx("menu_hover")
                     selected = (selected + 1) % len(items)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     res = keys[selected]
                     if res == "movelist":
                         move_list_screen(surface, clock)
                         continue
+                    _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                     return res
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 for i, r in enumerate(menu_rects):
@@ -493,11 +880,8 @@ def pause_screen(surface, clock):
                         if res == "movelist":
                             move_list_screen(surface, clock)
                             continue
+                        _safe_set_cursor(pygame.SYSTEM_CURSOR_ARROW)
                         return res
-            if event.type == pygame.MOUSEMOTION:
-                for i, r in enumerate(menu_rects):
-                    if r.collidepoint(event.pos):
-                        selected = i
 
         temp = base_frame.copy()
         temp.blit(overlay, (0, 0))
@@ -701,6 +1085,19 @@ def results_screen(surface, clock, stats_or_result, p1_name=None, p2_name=None,
     p2_kind = stats.get("p2_kind", "ai")
     is_human_match = (p1_kind == "human" or p2_kind == "human")
     is_ai_vs_ai = (p1_kind == "ai" and p2_kind == "ai")
+
+    reward_info = None
+    last_ding_step = -1
+    if is_human_match:
+        from backend.data.progression import calculate_match_rewards
+        reward_info = calculate_match_rewards(
+            stats,
+            player_level=stats.get("p1_level", 1),
+            opponent_level=stats.get("p2_level", 1),
+        )
+        def_player = results_db.get_default_player()
+        if def_player:
+            results_db.add_coins(int(def_player["player_id"]), reward_info["total_coins"])
 
     # Font: Exactly one font family across 3 sizes only
     font_title = pygame.font.Font(None, 52)
@@ -1132,7 +1529,40 @@ def results_screen(surface, clock, stats_or_result, p1_name=None, p2_name=None,
 
         # Match Info Line: "Time 0:21 · Difficulty LOW · Arena Iron Foundry"
         info_surf = font_body.render(info_str, True, LIGHT_GREY)
-        surface.blit(info_surf, info_surf.get_rect(center=(SCREEN_WIDTH // 2, 422)))
+        surface.blit(info_surf, info_surf.get_rect(center=(SCREEN_WIDTH // 2, 416)))
+
+        # Itemized Coin Reward Breakdown & Achievement Badges
+        if reward_info:
+            tot = reward_info["total_coins"]
+            prog_factor = min(1.0, elapsed / 1.0)
+            anim_coins = int(tot * prog_factor)
+            current_ding_step = int(elapsed * 8)
+            if current_ding_step != last_ding_step and elapsed < 1.0 and anim_coins > 0:
+                audio.play_sfx("coin")
+                last_ding_step = current_ding_step
+
+            rew_rect = pygame.Rect(SCREEN_WIDTH // 2 - 320, 428, 640, 24)
+            pygame.draw.rect(surface, (25, 30, 45), rew_rect, border_radius=6)
+            pygame.draw.rect(surface, (255, 215, 80), rew_rect, width=1, border_radius=6)
+
+            rew_text = f"PRIZE: +{anim_coins} Gold"
+            top_bonuses = [f"{lbl}: +{val}" for lbl, val in reward_info["breakdown"][:3] if val > 0]
+            if top_bonuses:
+                rew_text += "  (" + ", ".join(top_bonuses) + ")"
+
+            rew_surf = font_body.render(rew_text, True, (255, 220, 90))
+            surface.blit(rew_surf, rew_surf.get_rect(center=rew_rect.center))
+
+        t_unlocked = stats.get("unlocked_trophies", [])
+        m_completed = stats.get("completed_missions", [])
+        if t_unlocked:
+            t_names = ", ".join(t["name"] for t in t_unlocked)
+            t_surf = font_body.render(f"★ UNLOCKED TROPHY: {t_names}", True, (255, 215, 80))
+            surface.blit(t_surf, t_surf.get_rect(center=(SCREEN_WIDTH // 2, 456)))
+        elif m_completed:
+            m_names = ", ".join(m["name"] for m in m_completed)
+            m_surf = font_body.render(f"✓ COMPLETED MISSION: {m_names}", True, (100, 240, 120))
+            surface.blit(m_surf, m_surf.get_rect(center=(SCREEN_WIDTH // 2, 456)))
 
         # --- Buttons ---
         for i, (b_rect, text, base_col, _) in enumerate(buttons_info):
@@ -1197,30 +1627,32 @@ def player_name_prompt(surface, clock) -> str:
                         player_name += event.unicode
 
         surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 115))
+        surface.blit(scrim, (0, 0))
+
+        _draw_title(surface, "WARRIOR PROFILE", font_large, y=35)
 
         # Modal box
         modal_rect = pygame.Rect(SCREEN_WIDTH // 2 - 250, 180, 500, 240)
-        modal_surf = pygame.Surface((500, 240), pygame.SRCALPHA)
-        modal_surf.fill((15, 20, 35, 235))
-        surface.blit(modal_surf, modal_rect)
-        pygame.draw.rect(surface, (80, 100, 150), modal_rect, width=2, border_radius=10)
+        draw_obsidian_card(surface, modal_rect, is_selected=True, border_radius=10)
 
-        t1 = font_large.render("WELCOME TO ARENA-AI", True, (241, 196, 15))
+        t1 = font_large.render("WELCOME TO ARENA-AI", True, GOLD_BRIGHT)
         surface.blit(t1, t1.get_rect(center=(SCREEN_WIDTH // 2, 220)))
 
-        t2 = font_small.render("Enter Your Player Callsign:", True, LIGHT_GREY)
+        t2 = font_small.render("Enter Your Combat Moniker:", True, TEXT_MUTED)
         surface.blit(t2, t2.get_rect(center=(SCREEN_WIDTH // 2, 260)))
 
         # Text input box
         input_rect = pygame.Rect(SCREEN_WIDTH // 2 - 160, 290, 320, 44)
-        pygame.draw.rect(surface, (30, 35, 55), input_rect, border_radius=6)
-        pygame.draw.rect(surface, (100, 130, 200), input_rect, width=2, border_radius=6)
+        pygame.draw.rect(surface, (18, 20, 32), input_rect, border_radius=6)
+        pygame.draw.rect(surface, PANEL_BORDER_GLOW, input_rect, width=2, border_radius=6)
 
         cursor = "_" if (int(time.time() * 2) % 2 == 0) else ""
-        txt_surf = font_medium.render(player_name + cursor, True, WHITE)
+        txt_surf = font_medium.render(player_name + cursor, True, GOLD_BRIGHT)
         surface.blit(txt_surf, txt_surf.get_rect(center=input_rect.center))
 
-        t3 = font_small.render("Press Enter to Confirm  |  Esc for Default", True, (160, 175, 200))
+        t3 = font_small.render("Press Enter to Confirm  |  Esc for Default", True, TEXT_GOLD_MUTED)
         surface.blit(t3, t3.get_rect(center=(SCREEN_WIDTH // 2, 380)))
 
         if pygame.display.get_surface() is not None:
@@ -1242,6 +1674,10 @@ def settings_screen(surface, clock, settings):
     settings.setdefault("log_fights", False)
     settings.setdefault("speed", 1.0)
     settings.setdefault("show_ai", True)
+    settings.setdefault("master_volume", 1.0)
+    settings.setdefault("sfx_volume", 0.8)
+    settings.setdefault("music_volume", 0.6)
+    settings.setdefault("is_muted", False)
 
     SPEED_OPTIONS = [0.5, 1.0, 2.0, 3.0]
     SPEED_LABELS = ["0.5x", "1x", "2x", "3x"]
@@ -1252,11 +1688,27 @@ def settings_screen(surface, clock, settings):
         speed_index = 1
         settings["speed"] = 1.0
 
-    items = ["log_fights", "speed", "show_ai", "export_csv", "reset_results"]
+    items = [
+        "master_vol",
+        "sfx_vol",
+        "music_vol",
+        "mute",
+        "speed",
+        "show_ai",
+        "log_fights",
+        "shield_wall",
+        "export_csv",
+        "reset_results",
+    ]
     labels = {
-        "log_fights": "Log Human Fights",
+        "master_vol": "Master Volume",
+        "sfx_vol": "SFX Volume",
+        "music_vol": "Music Volume",
+        "mute": "Mute All Audio",
         "speed": "Game Speed",
         "show_ai": "Show AI Thinking",
+        "log_fights": "Log Human Fights",
+        "shield_wall": "Shield Wall Balance",
         "export_csv": "Export Results to CSV",
         "reset_results": "Reset Match Results",
     }
@@ -1288,20 +1740,44 @@ def settings_screen(surface, clock, settings):
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
+                    audio.play_sfx("menu_back")
                     return settings
                 if event.key == pygame.K_UP:
+                    audio.play_sfx("menu_hover")
                     selected = (selected - 1) % len(items)
                 elif event.key == pygame.K_DOWN:
+                    audio.play_sfx("menu_hover")
                     selected = (selected + 1) % len(items)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     key = items[selected]
-                    if key == "log_fights":
+                    audio.play_sfx("menu_select")
+                    if key == "mute":
+                        settings["is_muted"] = not settings["is_muted"]
+                        audio.update_volume(muted=settings["is_muted"])
+                    elif key == "master_vol":
+                        settings["master_volume"] = round((settings["master_volume"] + 0.2) % 1.2, 1)
+                        if settings["master_volume"] > 1.0:
+                            settings["master_volume"] = 0.0
+                        audio.update_volume(master=settings["master_volume"])
+                    elif key == "sfx_vol":
+                        settings["sfx_volume"] = round((settings["sfx_volume"] + 0.2) % 1.2, 1)
+                        if settings["sfx_volume"] > 1.0:
+                            settings["sfx_volume"] = 0.0
+                        audio.update_volume(sfx=settings["sfx_volume"])
+                    elif key == "music_vol":
+                        settings["music_volume"] = round((settings["music_volume"] + 0.2) % 1.2, 1)
+                        if settings["music_volume"] > 1.0:
+                            settings["music_volume"] = 0.0
+                        audio.update_volume(music=settings["music_volume"])
+                    elif key == "log_fights":
                         settings["log_fights"] = not settings["log_fights"]
                     elif key == "show_ai":
                         settings["show_ai"] = not settings["show_ai"]
                     elif key == "speed":
                         speed_index = (speed_index + 1) % len(SPEED_OPTIONS)
                         settings["speed"] = SPEED_OPTIONS[speed_index]
+                    elif key == "shield_wall":
+                        settings = shield_wall_settings_screen(surface, clock, settings)
                     elif key == "export_csv":
                         path = results_db.export_results_to_csv()
                         status_msg = f"Exported to {path}!"
@@ -1310,27 +1786,80 @@ def settings_screen(surface, clock, settings):
                         confirming_reset = True
                 elif event.key == pygame.K_LEFT:
                     key = items[selected]
-                    if key == "speed":
+                    if key == "master_vol":
+                        settings["master_volume"] = max(0.0, round(settings["master_volume"] - 0.1, 1))
+                        audio.update_volume(master=settings["master_volume"])
+                        audio.play_sfx("menu_hover")
+                    elif key == "sfx_vol":
+                        settings["sfx_volume"] = max(0.0, round(settings["sfx_volume"] - 0.1, 1))
+                        audio.update_volume(sfx=settings["sfx_volume"])
+                        audio.play_sfx("menu_hover")
+                    elif key == "music_vol":
+                        settings["music_volume"] = max(0.0, round(settings["music_volume"] - 0.1, 1))
+                        audio.update_volume(music=settings["music_volume"])
+                    elif key == "mute":
+                        settings["is_muted"] = not settings["is_muted"]
+                        audio.update_volume(muted=settings["is_muted"])
+                        audio.play_sfx("menu_hover")
+                    elif key == "speed":
                         speed_index = (speed_index - 1) % len(SPEED_OPTIONS)
                         settings["speed"] = SPEED_OPTIONS[speed_index]
+                        audio.play_sfx("menu_hover")
                 elif event.key == pygame.K_RIGHT:
                     key = items[selected]
-                    if key == "speed":
+                    if key == "master_vol":
+                        settings["master_volume"] = min(1.0, round(settings["master_volume"] + 0.1, 1))
+                        audio.update_volume(master=settings["master_volume"])
+                        audio.play_sfx("menu_hover")
+                    elif key == "sfx_vol":
+                        settings["sfx_volume"] = min(1.0, round(settings["sfx_volume"] + 0.1, 1))
+                        audio.update_volume(sfx=settings["sfx_volume"])
+                        audio.play_sfx("menu_hover")
+                    elif key == "music_vol":
+                        settings["music_volume"] = min(1.0, round(settings["music_volume"] + 0.1, 1))
+                        audio.update_volume(music=settings["music_volume"])
+                    elif key == "mute":
+                        settings["is_muted"] = not settings["is_muted"]
+                        audio.update_volume(muted=settings["is_muted"])
+                        audio.play_sfx("menu_hover")
+                    elif key == "speed":
                         speed_index = (speed_index + 1) % len(SPEED_OPTIONS)
                         settings["speed"] = SPEED_OPTIONS[speed_index]
+                        audio.play_sfx("menu_hover")
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 for i, rect in enumerate(row_rects):
                     if rect.collidepoint(event.pos):
                         selected = i
                         key = items[i]
-                        if key == "log_fights":
+                        audio.play_sfx("menu_select")
+                        if key == "mute":
+                            settings["is_muted"] = not settings["is_muted"]
+                            audio.update_volume(muted=settings["is_muted"])
+                        elif key == "master_vol":
+                            settings["master_volume"] = round((settings["master_volume"] + 0.2) % 1.2, 1)
+                            if settings["master_volume"] > 1.0:
+                                settings["master_volume"] = 0.0
+                            audio.update_volume(master=settings["master_volume"])
+                        elif key == "sfx_vol":
+                            settings["sfx_volume"] = round((settings["sfx_volume"] + 0.2) % 1.2, 1)
+                            if settings["sfx_volume"] > 1.0:
+                                settings["sfx_volume"] = 0.0
+                            audio.update_volume(sfx=settings["sfx_volume"])
+                        elif key == "music_vol":
+                            settings["music_volume"] = round((settings["music_volume"] + 0.2) % 1.2, 1)
+                            if settings["music_volume"] > 1.0:
+                                settings["music_volume"] = 0.0
+                            audio.update_volume(music=settings["music_volume"])
+                        elif key == "log_fights":
                             settings["log_fights"] = not settings["log_fights"]
                         elif key == "show_ai":
                             settings["show_ai"] = not settings["show_ai"]
                         elif key == "speed":
                             speed_index = (speed_index + 1) % len(SPEED_OPTIONS)
                             settings["speed"] = SPEED_OPTIONS[speed_index]
+                        elif key == "shield_wall":
+                            settings = shield_wall_settings_screen(surface, clock, settings)
                         elif key == "export_csv":
                             path = results_db.export_results_to_csv()
                             status_msg = f"Exported to {path}!"
@@ -1340,19 +1869,32 @@ def settings_screen(surface, clock, settings):
 
             if event.type == pygame.MOUSEMOTION:
                 for i, rect in enumerate(row_rects):
-                    if rect.collidepoint(event.pos):
+                    if rect.collidepoint(event.pos) and selected != i:
                         selected = i
+                        audio.play_sfx("menu_hover")
 
         surface.blit(bg_img, (0, 0))
         scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        scrim.fill((0, 0, 0, 130))
+        scrim.fill((0, 0, 0, 115))
         surface.blit(scrim, (0, 0))
 
-        _draw_title(surface, "Settings", font_large, y=50)
+        _draw_title(surface, "SETTINGS & AUDIO", font_large, y=35)
 
         row_rects = []
         for i, key in enumerate(items):
-            if key == "log_fights":
+            if key == "master_vol":
+                val = f"<  {int(settings['master_volume'] * 100)}%  >"
+                text = f"{labels[key]}:  {val}"
+            elif key == "sfx_vol":
+                val = f"<  {int(settings['sfx_volume'] * 100)}%  >"
+                text = f"{labels[key]}:  {val}"
+            elif key == "music_vol":
+                val = f"<  {int(settings['music_volume'] * 100)}%  >"
+                text = f"{labels[key]}:  {val}"
+            elif key == "mute":
+                val = "MUTED" if settings["is_muted"] else "UNMUTED"
+                text = f"{labels[key]}:  [ {val} ]"
+            elif key == "log_fights":
                 val = "ON" if settings["log_fights"] else "OFF"
                 text = f"{labels[key]}:  {val}"
             elif key == "speed":
@@ -1361,6 +1903,10 @@ def settings_screen(surface, clock, settings):
             elif key == "show_ai":
                 val = "ON" if settings["show_ai"] else "OFF"
                 text = f"{labels[key]}:  {val}"
+            elif key == "shield_wall":
+                sw_on = "ON" if settings.get("shield_enabled", False) else "OFF"
+                sw_pre = settings.get("shield_preset", "Normal")
+                text = f"[ {labels[key]}: {sw_on} ({sw_pre}) ]"
             elif key == "export_csv":
                 text = f"[ {labels[key]} ]"
             elif key == "reset_results":
@@ -1368,16 +1914,12 @@ def settings_screen(surface, clock, settings):
             else:
                 text = f"{labels[key]}"
 
-            colour = WHITE if i == selected else LIGHT_GREY
-            bg = MENU_HIGHLIGHT if i == selected else None
-
+            colour = GOLD_BRIGHT if i == selected else TEXT_WHITE
             rendered = font_medium.render(text, True, colour)
-            rect = rendered.get_rect(midtop=(SCREEN_WIDTH // 2, 140 + i * 55))
-            click_rect = rect.inflate(60, 14)
+            rect = rendered.get_rect(midtop=(SCREEN_WIDTH // 2, 85 + i * 38))
+            click_rect = rect.inflate(70, 8)
 
-            if bg:
-                pygame.draw.rect(surface, bg, click_rect, border_radius=6)
-
+            draw_obsidian_card(surface, click_rect, is_selected=(i == selected), border_radius=6)
             surface.blit(rendered, rect)
             row_rects.append(click_rect)
 
@@ -1458,14 +2000,15 @@ def statistics_screen(surface, clock, player_id: Optional[int] = None):
                     active_tab = 1
 
         surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 115))
+        surface.blit(scrim, (0, 0))
 
-        # Main Scrim Box
-        scrim = pygame.Surface((920, 550), pygame.SRCALPHA)
-        scrim.fill((12, 14, 25, 230))
-        surface.blit(scrim, (52, 25))
-        pygame.draw.rect(surface, (70, 85, 125), pygame.Rect(52, 25, 920, 550), width=2, border_radius=12)
+        _draw_title(surface, "COMBAT STATISTICS", font_large, y=25)
 
-        _draw_title(surface, "STATISTICS & RECORDS", font_large, y=35)
+        # Main Obsidian Panel
+        stat_box = pygame.Rect(52, 65, 920, 510)
+        draw_obsidian_card(surface, stat_box, is_selected=False, border_radius=12)
 
         # Tab Buttons
         for idx, (rect, label) in enumerate([(tab_you_rect, "[1] YOU (Human Record)"), (tab_ai_rect, "[2] AI (Model Stats & History)")]):
@@ -1648,15 +2191,15 @@ def manual_screen(surface, clock):
     scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     scrim.fill((0, 0, 0, 110))
 
-    page = 0   # 0 = How to Play, 1 = Controls, 2 = Special Moves
-    pages = ["How to Play", "Controls", "Special Moves"]
+    page = 0   # 0 = How to Play, 1 = Controls, 2 = Special Moves, 3 = Campaign & Progression
+    pages = ["How to Play", "Controls", "Special Moves", "Campaign & Upgrades"]
     tab_rects = []
 
     while True:
         # Back button rect (drawn every frame, checked on click)
         back_rect = pygame.Rect(20, SCREEN_HEIGHT - 50, 100, 36)
-        tab_w = 170
-        tab_gap = 20
+        tab_w = 190
+        tab_gap = 14
         total_tab_w = len(pages) * tab_w + (len(pages) - 1) * tab_gap
         start_tab_x = (SCREEN_WIDTH - total_tab_w) // 2
 
@@ -1665,24 +2208,32 @@ def manual_screen(surface, clock):
                 return
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
+                    audio.play_sfx("menu_back")
                     return
                 elif event.key == pygame.K_LEFT:
+                    audio.play_sfx("menu_hover")
                     page = max(0, page - 1)
                 elif event.key == pygame.K_RIGHT:
+                    audio.play_sfx("menu_hover")
                     page = min(len(pages) - 1, page + 1)
                 elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    # Cycle to next page
+                    audio.play_sfx("menu_select")
                     page = (page + 1) % len(pages)
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if back_rect.collidepoint(event.pos):
+                    audio.play_sfx("menu_back")
                     return
                 for i, rect in enumerate(tab_rects):
                     if rect.collidepoint(event.pos):
+                        audio.play_sfx("menu_select")
                         page = i
 
         surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 115))
         surface.blit(scrim, (0, 0))
-        _draw_title(surface, "Manual & Combat Guide", font_large, y=16)
+
+        _draw_title(surface, "COMBAT MANUAL", font_large, y=25)
 
         # --- Page tabs ---
         tab_rects = []
@@ -1704,8 +2255,10 @@ def manual_screen(surface, clock):
             _draw_rules_page(surface, font_medium, font_small)
         elif page == 1:
             _draw_controls_page(surface, font_medium, font_small)
-        else:
+        elif page == 2:
             _draw_specials_page(surface, font_medium, font_small)
+        else:
+            _draw_campaign_guide_page(surface, font_medium, font_small)
 
         # --- Back button ---
         pygame.draw.rect(surface, DARK_GREY, back_rect, border_radius=5)
@@ -2005,6 +2558,74 @@ def _draw_specials_page(surface, font_medium, font_small):
             surface.blit(t_surf, (card_x + 10, 410 + t_idx * 18))
 
 
+def _draw_campaign_guide_page(surface, font_medium, font_small):
+    """Draw the 'Campaign & Upgrades' guide page detailing new tournament systems."""
+    sections = [
+        {
+            "title": "Tournament Campaign Mode",
+            "accent": (255, 215, 80),
+            "lines": [
+                "• Embark on an 8-battle escalating campaign against skilled champions.",
+                "• Immerse yourself in typewriter story dialogues before each bout.",
+                "• Face personality-aligned rivals, culminating with the Grand Sovereign.",
+                "• Win battles to earn star ratings and unlock rich coin bounty chests.",
+            ],
+        },
+        {
+            "title": "Warrior Upgrades & Level Scaling",
+            "accent": (100, 220, 140),
+            "lines": [
+                "• Earn gold from match victories, combos, parries, and flawless rounds.",
+                "• Upgrade individual warriors up to Level 20 in the Upgrade station.",
+                "• Enhances Effective Health (+5%), Damage (+3%), Speed, and Guard Defense.",
+                "• Opponents scale dynamically to match your battle progression.",
+            ],
+        },
+        {
+            "title": "Health Regeneration & Defense",
+            "accent": (120, 200, 255),
+            "lines": [
+                "• Human fighters recover health (1.5%/s) when resting or actively guarding.",
+                "• Activates automatically after 2 seconds without taking hit damage.",
+                "• A subtle soft green pulse glows along the health bar during regeneration.",
+                "• Taking any strike resets the timer immediately; stays off in AI simulations.",
+            ],
+        },
+        {
+            "title": "Tutorial Room & Contracts",
+            "accent": (220, 140, 255),
+            "lines": [
+                "• Practice indefinitely against an immortal dummy (Stand, Crouch, Guard, Jump).",
+                "• Guided interactive lessons confirm actual inputs before checking off steps.",
+                "• Fulfill 18 trophies and ongoing contracts for massive coin rewards.",
+                "• Dynamic command bindings display adapts if keys are rebound.",
+            ],
+        },
+    ]
+
+    card_w = (SCREEN_WIDTH - 90) // 2
+    card_h = 190
+    card_bg = (18, 22, 38)
+
+    for i, s in enumerate(sections):
+        col = i % 2
+        row = i // 2
+        cx = 35 + col * (card_w + 20)
+        cy = 118 + row * (card_h + 16)
+        card_rect = pygame.Rect(cx, cy, card_w, card_h)
+
+        _draw_manual_card(surface, card_rect, border_color=(70, 75, 110), bg_color=card_bg)
+        t_surf = font_medium.render(s["title"], True, s["accent"])
+        surface.blit(t_surf, (cx + 16, cy + 14))
+        pygame.draw.line(surface, s["accent"], (cx + 16, cy + 40), (cx + card_w - 16, cy + 40), 1)
+
+        y_l = cy + 50
+        for line in s["lines"]:
+            l_surf = font_small.render(line, True, (210, 220, 235))
+            surface.blit(l_surf, (cx + 16, y_l))
+            y_l += 28
+
+
 # ------------------------------------------------------------------
 # Model Insights & Neural League Screen (Phase 6)
 # ------------------------------------------------------------------
@@ -2062,8 +2683,11 @@ def model_insights_screen(surface, clock):
                         selected_p_idx = i
 
         surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 115))
         surface.blit(scrim, (0, 0))
-        _draw_title(surface, "Model Insights & Neural League", font_large, y=16)
+
+        _draw_title(surface, "AI MODEL INSIGHTS", font_large, y=25)
 
         # Personality selector tabs
         for i, p_name in enumerate(personalities):
@@ -2187,6 +2811,245 @@ def model_insights_screen(surface, clock):
         pygame.draw.rect(surface, LIGHT_GREY, back_rect, 2, border_radius=5)
         back_label = font_medium.render("< Back", True, WHITE)
         surface.blit(back_label, back_label.get_rect(center=back_rect.center))
+
+        if pygame.display.get_surface() is not None:
+            pygame.display.flip()
+        clock.tick(30)
+
+
+def shield_wall_settings_screen(surface, clock, settings):
+    """In-game Shield Wall Balance Settings submenu (Step 3).
+
+    Provides:
+    - Toggle On/Off
+    - Presets: Weak / Normal / Strong / Custom
+    - Same for both fighters toggle (default ON)
+    - Sliders (HP, duration, cooldown, cost, regen) with clamped ranges
+    """
+    from backend.engine.shield_config import (
+        PRESETS,
+        SLIDER_RANGES,
+        clamp_shield_balance,
+    )
+
+    font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
+    font_medium = pygame.font.Font(None, FONT_SIZE_MEDIUM)
+    font_small = pygame.font.Font(None, FONT_SIZE_SMALL)
+
+    settings.setdefault("shield_enabled", False)
+    settings.setdefault("shield_preset", "Normal")
+    settings.setdefault("shield_same_both", True)
+    settings.setdefault("shield_p1", {
+        "shield_hp": 25.0, "duration_s": 3.0, "cooldown_s": 6.0,
+        "energy_cost": 35.0, "energy_regen_per_s": 8.0,
+    })
+    settings.setdefault("shield_p2", {
+        "shield_hp": 25.0, "duration_s": 3.0, "cooldown_s": 6.0,
+        "energy_cost": 35.0, "energy_regen_per_s": 8.0,
+    })
+
+    PRESET_LIST = ["Weak", "Normal", "Strong", "Custom"]
+    SLIDER_KEYS = [
+        ("shield_hp", "Shield HP", 5.0),
+        ("duration_s", "Duration (s)", 0.5),
+        ("cooldown_s", "Cooldown (s)", 0.5),
+        ("energy_cost", "Energy Cost", 5.0),
+        ("energy_regen_per_s", "Regen / sec", 1.0),
+    ]
+
+    selected = 0
+    editing_p2 = False
+    bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+    while True:
+        target_dict = settings["shield_p2"] if (not settings["shield_same_both"] and editing_p2) else settings["shield_p1"]
+
+        items = ["enabled", "preset", "same_both"]
+        if not settings["shield_same_both"]:
+            items.append("switch_player")
+        if settings["shield_preset"] == "Custom":
+            items.extend([k for k, _, _ in SLIDER_KEYS])
+
+        selected = min(selected, len(items) - 1)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return settings
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return settings
+                elif event.key == pygame.K_UP:
+                    selected = (selected - 1) % len(items)
+                elif event.key == pygame.K_DOWN:
+                    selected = (selected + 1) % len(items)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    cur = items[selected]
+                    if cur == "enabled":
+                        settings["shield_enabled"] = not settings["shield_enabled"]
+                    elif cur == "same_both":
+                        settings["shield_same_both"] = not settings["shield_same_both"]
+                    elif cur == "switch_player":
+                        editing_p2 = not editing_p2
+                    elif cur == "preset":
+                        idx = PRESET_LIST.index(settings["shield_preset"])
+                        new_pre = PRESET_LIST[(idx + 1) % len(PRESET_LIST)]
+                        settings["shield_preset"] = new_pre
+                        if new_pre in PRESETS:
+                            p_bal = PRESETS[new_pre]
+                            for d in (settings["shield_p1"], settings["shield_p2"]):
+                                d["shield_hp"] = p_bal.shield_hp
+                                d["duration_s"] = p_bal.duration_s
+                                d["cooldown_s"] = p_bal.cooldown_s
+                                d["energy_cost"] = p_bal.energy_cost
+                                d["energy_regen_per_s"] = p_bal.energy_regen_per_s
+                elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                    delta_sign = 1.0 if event.key == pygame.K_RIGHT else -1.0
+                    cur = items[selected]
+                    if cur == "preset":
+                        idx = PRESET_LIST.index(settings["shield_preset"])
+                        new_pre = PRESET_LIST[(idx + int(delta_sign)) % len(PRESET_LIST)]
+                        settings["shield_preset"] = new_pre
+                        if new_pre in PRESETS:
+                            p_bal = PRESETS[new_pre]
+                            for d in (settings["shield_p1"], settings["shield_p2"]):
+                                d["shield_hp"] = p_bal.shield_hp
+                                d["duration_s"] = p_bal.duration_s
+                                d["cooldown_s"] = p_bal.cooldown_s
+                                d["energy_cost"] = p_bal.energy_cost
+                                d["energy_regen_per_s"] = p_bal.energy_regen_per_s
+                    else:
+                        for sk, _, step_val in SLIDER_KEYS:
+                            if cur == sk:
+                                lo, hi = SLIDER_RANGES[sk]
+                                target_dict[sk] = round(max(lo, min(hi, target_dict[sk] + delta_sign * step_val)), 1)
+                                if settings["shield_same_both"]:
+                                    settings["shield_p2"][sk] = target_dict[sk]
+
+        surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 140))
+        surface.blit(scrim, (0, 0))
+
+        _draw_title(surface, "Shield Wall Balance", font_large, y=35)
+
+        for i, key in enumerate(items):
+            if key == "enabled":
+                txt = f"Shield Wall:  {'ON' if settings['shield_enabled'] else 'OFF'}"
+            elif key == "preset":
+                txt = f"Preset:  <  {settings['shield_preset']}  >"
+            elif key == "same_both":
+                txt = f"Same for both fighters:  {'ON' if settings['shield_same_both'] else 'OFF'}"
+            elif key == "switch_player":
+                who = "Player 2 (Handicap)" if editing_p2 else "Player 1"
+                txt = f"Editing Sliders For:  [ {who} ]"
+            else:
+                label = next(lbl for k, lbl, _ in SLIDER_KEYS if k == key)
+                txt = f"{label}:  <  {target_dict[key]}  >"
+
+            col = WHITE if i == selected else LIGHT_GREY
+            rendered = font_medium.render(txt, True, col)
+            rect = rendered.get_rect(midtop=(SCREEN_WIDTH // 2, 110 + i * 42))
+            if i == selected:
+                pygame.draw.rect(surface, MENU_HIGHLIGHT, rect.inflate(50, 10), border_radius=6)
+            surface.blit(rendered, rect)
+
+        hint = font_small.render(
+            "Up/Down select  |  Enter toggle  |  Left/Right adjust slider  |  Esc back",
+            True, LIGHT_GREY,
+        )
+        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 540)))
+
+        if pygame.display.get_surface() is not None:
+            pygame.display.flip()
+        clock.tick(30)
+
+
+def rumble_menu(surface, clock):
+    """Arena Rumble configuration submenu allowing selective mechanic toggles."""
+    from backend.engine.rules import ModeRules
+
+    font_large = pygame.font.Font(None, FONT_SIZE_LARGE)
+    font_medium = pygame.font.Font(None, FONT_SIZE_MEDIUM)
+    font_small = pygame.font.Font(None, FONT_SIZE_SMALL)
+
+    rules = ModeRules.rumble()
+    match_types = ["Human vs AI", "AI vs AI"]
+    match_idx = 0
+
+    items = [
+        "start",
+        "match_type",
+        "zone",
+        "building",
+        "loot",
+        "objects",
+        "shield_wall",
+        "auto_pickup",
+    ]
+    selected = 0
+    bg_img = assets.get_intro_blur((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None, None
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return None, None
+                elif event.key == pygame.K_UP:
+                    selected = (selected - 1) % len(items)
+                elif event.key == pygame.K_DOWN:
+                    selected = (selected + 1) % len(items)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    cur = items[selected]
+                    if cur == "start":
+                        m_type = "human_vs_ai" if match_idx == 0 else "ai_vs_ai"
+                        return rules, m_type
+                    elif cur == "match_type":
+                        match_idx = (match_idx + 1) % len(match_types)
+                    elif cur == "zone":
+                        rules.enable_zone = not rules.enable_zone
+                    elif cur == "building":
+                        rules.enable_building = not rules.enable_building
+                    elif cur == "loot":
+                        rules.enable_loot = not rules.enable_loot
+                    elif cur == "objects":
+                        rules.enable_objects = not rules.enable_objects
+                    elif cur == "shield_wall":
+                        rules.enable_shield_wall = not rules.enable_shield_wall
+                    elif cur == "auto_pickup":
+                        rules.auto_pickup = not rules.auto_pickup
+
+        surface.blit(bg_img, (0, 0))
+        scrim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 115))
+        surface.blit(scrim, (0, 0))
+
+        _draw_title(surface, "ARENA RUMBLE", font_large, y=35)
+
+        labels = {
+            "start": "[ START ARENA RUMBLE ]",
+            "match_type": f"Match Type:  {match_types[match_idx]}",
+            "zone": f"The Squeeze (Zone):  {'ON' if rules.enable_zone else 'OFF'}",
+            "building": f"Cover Building (B):  {'ON' if rules.enable_building else 'OFF'}",
+            "loot": f"Loot & Supply Drops:  {'ON' if rules.enable_loot else 'OFF'}",
+            "objects": f"Crates, Pads & Traps:  {'ON' if rules.enable_objects else 'OFF'}",
+            "shield_wall": f"Shield Wall (Q/E):  {'ON' if rules.enable_shield_wall else 'OFF'}",
+            "auto_pickup": f"Auto-Pickup Items:  {'ON' if rules.auto_pickup else 'OFF'}",
+        }
+
+        for i, key in enumerate(items):
+            is_sel = (i == selected)
+            col = WHITE if is_sel else LIGHT_GREY
+            rendered = font_medium.render(labels[key], True, col)
+            rect = rendered.get_rect(midtop=(SCREEN_WIDTH // 2, 110 + i * 44))
+            c_rect = rect.inflate(60, 10)
+            if is_sel:
+                pygame.draw.rect(surface, MENU_HIGHLIGHT, c_rect, border_radius=6)
+            surface.blit(rendered, rect)
+
+        hint = font_small.render("Up/Down select  |  Enter toggle/start  |  Esc back", True, LIGHT_GREY)
+        surface.blit(hint, hint.get_rect(midtop=(SCREEN_WIDTH // 2, 540)))
 
         if pygame.display.get_surface() is not None:
             pygame.display.flip()

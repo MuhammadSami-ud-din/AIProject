@@ -131,15 +131,19 @@ class PolicyAgent(Agent):
                 probs = probs / probs.sum()
 
             # Masked softmax sampling (not pure argmax, prevents human exploitation)
+            n_probs = len(probs)
             if hasattr(self.rng, "choices"):
-                chosen_idx = int(self.rng.choices(range(len(ALL_ACTIONS)), weights=probs, k=1)[0])
+                chosen_idx = int(self.rng.choices(range(n_probs), weights=probs, k=1)[0])
             else:
-                chosen_idx = int(self.rng.choice(len(ALL_ACTIONS), p=probs))
+                chosen_idx = int(self.rng.choice(n_probs, p=probs))
             chosen_action = ALL_ACTIONS[chosen_idx]
             self.last_confidence = float(probs[chosen_idx])
 
             # Action scores dictionary
-            scores = {act: float(probs[act.value] * 10.0) for act in ALL_ACTIONS}
+            scores = {
+                act: float(probs[act.value] * 10.0) if act.value < n_probs else 0.0
+                for act in ALL_ACTIONS
+            }
 
         self.last_inference_time_ms = self.last_breakdown.get("policy", 0.1)
         return chosen_action, scores

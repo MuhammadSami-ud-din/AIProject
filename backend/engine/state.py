@@ -6,9 +6,20 @@ Both are plain dataclasses so the step() function can copy and update them.
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 from backend.ai.actions import Action
 from backend.engine.constants import ARENA_WIDTH, ROUND_FRAMES
+from backend.engine.rules import ModeRules
+from backend.engine.rumble_state import (
+    ArenaObjectState,
+    ItemState,
+    KillFeedMessage,
+    SupplyDropState,
+    WallState,
+    ZoneState,
+)
+from backend.engine.shield_state import ShieldWallState
 
 
 @dataclass
@@ -111,6 +122,47 @@ class FighterState:
     # Which character this fighter is (for looking up body stats)
     character_name: str = "Golden"
 
+    # Arena Rumble Attributes (Phase 1-6)
+    build_charges: int = 3        # Build energy (starts at 3, max 3, +1 per 8s)
+    build_recharge_timer: int = 0 # Frame timer towards next build charge
+    building_frames: int = 0      # 12-frame placement lock during Action.BUILD
+    shield: float = 0.0           # Shield HP (absorbs damage first, max 20 HP)
+    speed_boost_timer: int = 0    # Speed Boots boost timer (frames)
+    power_boost_timer: int = 0    # Power Fist damage boost timer (frames)
+
+    # Rumble Statistics tracking (per-match)
+    walls_built: int = 0
+    walls_broken: int = 0
+    items_collected: int = 0
+    zone_damage_taken: float = 0.0
+
+    # Shield Wall Ability (Steps 1-5)
+    shield_wall: Optional[ShieldWallState] = None
+    shield_energy: float = 100.0
+    shield_cooldown_frames: int = 0
+    shield_startup_frames: int = 0
+    shield_startup_side: str = "none"
+    shield_break_stun: int = 0
+    shield_walls_raised: int = 0
+    shield_walls_broken: int = 0
+    shield_time_behind_frames: int = 0
+
+    # Projectile limits (shoot cooldown and per-round shot count)
+    projectile_cooldown: int = 0
+    shots_fired: int = 0
+
+    # Level & Progression Attributes (modest stat scaling)
+    level: int = 1
+    health_mult: float = 1.0
+    damage_mult: float = 1.0
+    speed_mult: float = 1.0
+    block_mult: float = 1.0
+
+    # Health Regeneration (only active when enabled for player)
+    regen_enabled: bool = False
+    no_hit_timer: int = 0
+
+
     @property
     def is_fury(self) -> bool:
         """Fury mode activates when health is below 25%."""
@@ -120,6 +172,24 @@ class FighterState:
     def is_dashing(self) -> bool:
         """True when the fighter's current/last action is a forward or back dash."""
         return self.last_action in (Action.DASH, Action.BACKDASH) or self.current_action in (Action.DASH, Action.BACKDASH)
+
+    @property
+    def busy(self) -> bool:
+        """True while the fighter cannot freely act (read-only).
+
+        Busy means: in attack startup/active/recovery, hitstun, blockstun,
+        knocked down or getting up, being thrown, or raising a shield.
+        """
+        return (
+            self.attack_phase in ("startup", "active", "recovery")
+            or self.recovery > 0
+            or self.hitstun > 0
+            or self.blockstun > 0
+            or self.is_knocked_down
+            or self.knockdown_frames > 0
+            or self.is_thrown
+            or self.shield_startup_frames > 0
+        )
 
     def copy(self):
         """A fresh copy that can be changed without touching the original."""
@@ -168,6 +238,34 @@ class FighterState:
             read_success=self.read_success,
             last_action=self.last_action,
             character_name=self.character_name,
+            build_charges=self.build_charges,
+            build_recharge_timer=self.build_recharge_timer,
+            building_frames=self.building_frames,
+            shield=self.shield,
+            speed_boost_timer=self.speed_boost_timer,
+            power_boost_timer=self.power_boost_timer,
+            walls_built=self.walls_built,
+            walls_broken=self.walls_broken,
+            items_collected=self.items_collected,
+            zone_damage_taken=self.zone_damage_taken,
+            shield_wall=self.shield_wall.copy() if self.shield_wall is not None else None,
+            shield_energy=self.shield_energy,
+            shield_cooldown_frames=self.shield_cooldown_frames,
+            shield_startup_frames=self.shield_startup_frames,
+            shield_startup_side=self.shield_startup_side,
+            shield_break_stun=self.shield_break_stun,
+            shield_walls_raised=self.shield_walls_raised,
+            shield_walls_broken=self.shield_walls_broken,
+            shield_time_behind_frames=self.shield_time_behind_frames,
+            projectile_cooldown=self.projectile_cooldown,
+            shots_fired=self.shots_fired,
+            level=self.level,
+            health_mult=self.health_mult,
+            damage_mult=self.damage_mult,
+            speed_mult=self.speed_mult,
+            block_mult=self.block_mult,
+            regen_enabled=self.regen_enabled,
+            no_hit_timer=self.no_hit_timer,
         )
 
 
@@ -199,6 +297,18 @@ class FightState:
     super_freeze_frames: int = 0   # Super flash freeze counter (15f)
     super_attacker: int = 0        # 1 or 2 (which player initiated super)
 
+    # Arena Rumble Game Mode State (Phase 1-6)
+    rules: ModeRules = field(default_factory=ModeRules.classic)
+    zone: Optional[ZoneState] = None
+    walls: list[WallState] = field(default_factory=list)
+    items: list[ItemState] = field(default_factory=list)
+    supply_drop: Optional[SupplyDropState] = None
+    arena_objects: list[ArenaObjectState] = field(default_factory=list)
+    kill_feed: list[KillFeedMessage] = field(default_factory=list)
+    next_loot_timer: int = 720
+    next_object_id: int = 1
+    match_seed: int = 42
+
     def copy(self):
         """A fresh copy of the entire fight state."""
         return FightState(
@@ -216,4 +326,14 @@ class FightState:
             match_result=self.match_result,
             super_freeze_frames=self.super_freeze_frames,
             super_attacker=self.super_attacker,
+            rules=self.rules.copy(),
+            zone=self.zone.copy() if self.zone is not None else None,
+            walls=[w.copy() for w in self.walls],
+            items=[it.copy() for it in self.items],
+            supply_drop=self.supply_drop.copy() if self.supply_drop else None,
+            arena_objects=[obj.copy() for obj in self.arena_objects],
+            kill_feed=[msg.copy() for msg in self.kill_feed],
+            next_loot_timer=self.next_loot_timer,
+            next_object_id=self.next_object_id,
+            match_seed=self.match_seed,
         )

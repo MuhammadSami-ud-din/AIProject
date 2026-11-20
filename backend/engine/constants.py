@@ -22,6 +22,25 @@ MAX_ROUNDS = 3             # play at most this many rounds
 WALK_SPEED = 4             # pixels per frame when walking
 
 # ---------------------------------------------------------------
+# Pushboxes (body collision): two grounded fighters can never overlap.
+# Half-width in pixels per character; min separation = sum of both.
+# ---------------------------------------------------------------
+PUSHBOX_HALF_WIDTH = {
+    "Crimson": 16.0,
+    "Steel": 18.0,
+    "Shadow": 14.0,
+    "Golden": 15.0,
+}
+PUSHBOX_DEFAULT_HALF_WIDTH = 15.0
+
+# ---------------------------------------------------------------
+# Projectile limits: shooting is a spice, not the whole game.
+# ---------------------------------------------------------------
+PROJECTILE_COOLDOWN_FRAMES = 150   # 2.5 s before the same fighter may shoot again
+PROJECTILE_MAX_ACTIVE = 1          # at most one of your shots flying at a time
+PROJECTILE_MAX_PER_ROUND = 4       # at most 4 shots per fighter per round
+
+# ---------------------------------------------------------------
 # Jumping
 # ---------------------------------------------------------------
 JUMP_DURATION = 40         # total frames a jump lasts (up + down)
@@ -30,6 +49,14 @@ JUMP_DURATION = 40         # total frames a jump lasts (up + down)
 # Blocking
 # ---------------------------------------------------------------
 BLOCK_DAMAGE_RATIO = 0.10  # a blocked hit does 10% of its full damage
+
+# ---------------------------------------------------------------
+# Health Regeneration (Campaign & Human vs AI matches only)
+# ---------------------------------------------------------------
+REGEN_DELAY_FRAMES = 120        # ~2.0 seconds without taking damage
+REGEN_RATE_PER_SECOND = 0.015   # 1.5% max health recovered per second
+REGEN_RATE_PER_FRAME = REGEN_RATE_PER_SECOND / FPS  # ~0.00025 per frame
+
 
 # ---------------------------------------------------------------
 # Attack data

@@ -66,6 +66,14 @@ _MIRROR_PAIRS = (
     ("my_meter", "enemy_meter"),
     ("my_guard_meter", "enemy_guard_meter"),
     ("my_combo_count", "enemy_combo_count"),
+    ("my_build_charges", "enemy_build_charges"),
+    ("my_shield", "enemy_shield"),
+    ("my_speed_boost", "enemy_speed_boost"),
+    ("my_power_boost", "enemy_power_boost"),
+    ("my_shield_wall_up", "enemy_shield_wall_up"),
+    ("my_shield_wall_hp", "enemy_shield_wall_hp"),
+    ("my_shield_energy", "enemy_shield_energy"),
+    ("my_shield_cooldown", "enemy_shield_cooldown"),
 )
 
 
@@ -116,6 +124,41 @@ class Observation:
     enemy_guard_meter: float = 100.0  # 0 to 100
     my_combo_count: int = 0
     enemy_combo_count: int = 0
+
+    # Arena Rumble Perception (Phase 5)
+    is_rumble: bool = False
+    zone_left: float = 0.0
+    zone_right: float = zones.ARENA_WIDTH
+    zone_time_to_close: float = 0.0
+    zone_is_closing: bool = False
+    zone_is_warning: bool = False
+    my_build_charges: int = 3
+    enemy_build_charges: int = 3
+    my_shield: float = 0.0
+    enemy_shield: float = 0.0
+    my_speed_boost: float = 0.0
+    enemy_speed_boost: float = 0.0
+    my_power_boost: float = 0.0
+    enemy_power_boost: float = 0.0
+    nearest_item_type: str = "none"
+    nearest_item_dist: float = 999.0
+    nearest_item_dir: float = 0.0      # -1.0 left, +1.0 right
+    wall_between: bool = False
+    wall_between_hp: float = 0.0
+    nearest_crate_dist: float = 999.0
+    nearest_pad_dist: float = 999.0
+    nearest_trap_dist: float = 999.0
+
+    # Shield Wall Perception (Step 4)
+    enable_shield_wall: bool = False
+    my_shield_wall_up: str = "none"         # "none", "front", "back"
+    enemy_shield_wall_up: str = "none"
+    my_shield_wall_hp: float = 0.0
+    enemy_shield_wall_hp: float = 0.0
+    my_shield_energy: float = 100.0
+    enemy_shield_energy: float = 100.0
+    my_shield_cooldown: float = 0.0         # seconds remaining
+    enemy_shield_cooldown: float = 0.0
 
     # Last frame's moves
     my_last_action: Action = Action.IDLE
@@ -214,6 +257,17 @@ class Observation:
     @property
     def can_attack(self):
         return self.can_act and self.my_cooldown == 0
+
+    def can_use_shield(self, energy_cost: float = 55.0) -> bool:
+        """Mask shield actions when not possible."""
+        return (
+            self.enable_shield_wall
+            and self.can_act
+            and not self.my_in_air
+            and self.my_shield_wall_up == "none"
+            and self.my_shield_cooldown <= 0.0
+            and self.my_shield_energy >= energy_cost
+        )
 
     @property
     def i_can_hit(self):

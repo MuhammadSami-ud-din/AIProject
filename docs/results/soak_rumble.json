@@ -1,0 +1,25 @@
+{
+  "mode": "rumble",
+  "matches": 1000,
+  "total_frames": 3949825,
+  "elapsed_seconds": 304.492,
+  "sim_fps": 12971.8,
+  "crashes": 0,
+  "boundary_violations": 0,
+  "wall_penetrations": 0,
+  "negative_health_violations": 0,
+  "timeout_violations": 0,
+  "winner_counts": {
+    "p1": 513,
+    "p2": 478,
+    "draw": 9
+  },
+  "passed": true,
+  "determinism_passed": true,
+  "perf": {
+    "avg_ms": 0.23979780012450647,
+    "p95_ms": 0.4351999959908426,
+    "max_ms": 0.869099996634759,
+    "passed": true
+  }
+}

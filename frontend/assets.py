@@ -22,6 +22,7 @@ ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
 SCREENS_DIR = os.path.join(ASSET_DIR, "screens")
 PORTRAITS_DIR = os.path.join(ASSET_DIR, "portraits")
 BACKGROUNDS_DIR = os.path.join(ASSET_DIR, "backgrounds")
+FIGHTERS_DIR = os.path.join(ASSET_DIR, "fighters")
 
 # Supported file extensions in order of preference
 EXTENSIONS = (".jpeg", ".jpg", ".png")
@@ -91,8 +92,14 @@ class AssetManager:
             try:
                 raw_image = pygame.image.load(file_path)
                 if pygame.display.get_surface() is not None:
-                    raw_image = raw_image.convert()
-                scaled = pygame.transform.smoothscale(raw_image, target_size)
+                    if file_path.lower().endswith(".png"):
+                        raw_image = raw_image.convert_alpha()
+                    else:
+                        raw_image = raw_image.convert()
+                if target_size is not None and (raw_image.get_width(), raw_image.get_height()) != target_size:
+                    scaled = pygame.transform.smoothscale(raw_image, target_size)
+                else:
+                    scaled = raw_image
                 self._cache[cache_key] = scaled
                 return scaled
             except Exception as e:
@@ -102,6 +109,36 @@ class AssetManager:
         placeholder = self._create_placeholder(target_size[0], target_size[1], stem)
         self._cache[cache_key] = placeholder
         return placeholder
+
+    # ------------------------------------------------------------------
+    # Fighter Full-Body Sprites
+    # ------------------------------------------------------------------
+    def get_fighter_sprite(self, character_name: str, size: Optional[Tuple[int, int]] = None,
+                           flip_h: bool = False) -> pygame.Surface:
+        """Return full-body fighter sprite, optionally scaled and flipped horizontally."""
+        stem = character_name.lower().strip()
+        cache_key = f"fighter:{stem}:{size[0] if size else 'orig'}x{size[1] if size else 'orig'}:{flip_h}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        file_path = self._find_file(FIGHTERS_DIR, stem)
+        if file_path:
+            try:
+                raw = pygame.image.load(file_path)
+                if pygame.display.get_surface() is not None:
+                    raw = raw.convert_alpha()
+                if size is not None and (raw.get_width(), raw.get_height()) != size:
+                    scaled = pygame.transform.smoothscale(raw, size)
+                else:
+                    scaled = raw
+                if flip_h:
+                    scaled = pygame.transform.flip(scaled, True, False)
+                self._cache[cache_key] = scaled
+                return scaled
+            except Exception as e:
+                print(f"[Assets] Warning: Failed to load fighter sprite {file_path}: {e}")
+
+        return self.get_portrait(character_name, size or (130, 170), flip_h=flip_h)
 
     # ------------------------------------------------------------------
     # Screen Art (Intro, Victory, Defeat)
@@ -171,11 +208,43 @@ class AssetManager:
     def get_arena(self, arena_name: str, size=(SCREEN_WIDTH, SCREEN_HEIGHT),
                   brightness: float = 1.0, dark_overlay: bool = True) -> pygame.Surface:
         """Get pre-scaled arena surface with fight dimming overlay."""
-        cache_key = f"arena:{arena_name}:{size[0]}x{size[1]}:{brightness:.2f}:{dark_overlay}"
+        # Normalize arena name to snake_case and match existing assets
+        clean = (
+            str(arena_name)
+            .lower()
+            .strip()
+            .replace(".jpeg", "")
+            .replace(".jpg", "")
+            .replace(".png", "")
+            .replace(" ", "_")
+        )
+        # Map common narrative aliases to available backgrounds
+        ARENA_ALIASES = {
+            "underground_vault": "arena_iron_foundry",
+            "temple_ruins": "arena_golden_temple",
+            "dojo": "arena_moonlit_bamboo",
+            "volcanic_depths": "arena_volcanic_forge",
+            "sky_colosseum": "arena_sky_colosseum",
+            "frozen_peak": "arena_frozen_peak",
+            "neon_rooftop": "arena_neon_rooftop",
+            "golden_temple": "arena_golden_temple",
+            "iron_foundry": "arena_iron_foundry",
+            "moonlit_bamboo": "arena_moonlit_bamboo",
+            "volcanic_forge": "arena_volcanic_forge",
+        }
+        mapped = ARENA_ALIASES.get(clean, clean)
+        if not mapped.startswith("arena_"):
+            mapped = f"arena_{mapped}"
+
+        # If normalized name has a file, use it; otherwise fallback to original clean
+        file_path = self._find_file(BACKGROUNDS_DIR, mapped)
+        target_stem = mapped if file_path else clean
+
+        cache_key = f"arena:{target_stem}:{size[0]}x{size[1]}:{brightness:.2f}:{dark_overlay}"
         if cache_key in self._cache:
             return self._cache[cache_key]
 
-        base = self.load_surface(BACKGROUNDS_DIR, arena_name, size).copy()
+        base = self.load_surface(BACKGROUNDS_DIR, target_stem, size).copy()
 
         # Adjust brightness if not 1.0
         if abs(brightness - 1.0) > 0.05:
@@ -221,3 +290,18 @@ class AssetManager:
 
 # Global singleton instance
 assets = AssetManager()
+
+
+def __getattr__(name: str):
+    """Delegate module-level attribute lookups to the singleton `assets` instance.
+
+    Prevents AttributeError if a caller does:
+        from frontend import assets
+        assets.get_arena(...)
+    instead of:
+        from frontend.assets import assets
+    """
+    if hasattr(assets, name):
+        return getattr(assets, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+

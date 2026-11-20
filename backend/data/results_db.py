@@ -11,6 +11,7 @@ Parameterised SQL is strictly enforced.
 from contextlib import contextmanager
 import csv
 import datetime
+import json
 import os
 import sqlite3
 import uuid
@@ -43,6 +44,9 @@ CREATE TABLE IF NOT EXISTS matches (
     seed INTEGER,
     player_id INTEGER,
     status TEXT CHECK(status IN ('finished', 'abandoned')) NOT NULL,
+    shield_enabled INTEGER NOT NULL DEFAULT 0,
+    shield_preset TEXT DEFAULT 'Normal',
+    shield_balance_json TEXT DEFAULT '{}',
     FOREIGN KEY(player_id) REFERENCES players(player_id)
 );
 
@@ -61,6 +65,42 @@ CREATE TABLE IF NOT EXISTS rounds (
 CREATE INDEX IF NOT EXISTS idx_matches_player_id ON matches(player_id);
 CREATE INDEX IF NOT EXISTS idx_matches_status ON matches(status);
 CREATE INDEX IF NOT EXISTS idx_rounds_match_id ON rounds(match_id);
+
+CREATE TABLE IF NOT EXISTS progress (
+    player_id INTEGER PRIMARY KEY,
+    coins INTEGER NOT NULL DEFAULT 0,
+    crimson_level INTEGER NOT NULL DEFAULT 1,
+    steel_level INTEGER NOT NULL DEFAULT 1,
+    shadow_level INTEGER NOT NULL DEFAULT 1,
+    golden_level INTEGER NOT NULL DEFAULT 1,
+    campaign_unlocked_battle INTEGER NOT NULL DEFAULT 1,
+    campaign_completed_battles TEXT NOT NULL DEFAULT '[]',
+    campaign_stars TEXT NOT NULL DEFAULT '{}',
+    total_coins_spent INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(player_id) REFERENCES players(player_id)
+);
+
+CREATE TABLE IF NOT EXISTS trophies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    trophy_id TEXT NOT NULL,
+    unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(player_id, trophy_id),
+    FOREIGN KEY(player_id) REFERENCES players(player_id)
+);
+
+CREATE TABLE IF NOT EXISTS missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    mission_id TEXT NOT NULL,
+    progress INTEGER NOT NULL DEFAULT 0,
+    target INTEGER NOT NULL DEFAULT 1,
+    completed INTEGER NOT NULL DEFAULT 0,
+    claimed INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(player_id, mission_id),
+    FOREIGN KEY(player_id) REFERENCES players(player_id)
+);
 """
 
 
@@ -102,6 +142,13 @@ class ResultsDB:
         with self.connection() as conn:
             with conn:
                 conn.executescript(SCHEMA_SQL)
+                cols = {row["name"] for row in conn.execute("PRAGMA table_info(matches)").fetchall()}
+                if "shield_enabled" not in cols:
+                    conn.execute("ALTER TABLE matches ADD COLUMN shield_enabled INTEGER NOT NULL DEFAULT 0;")
+                if "shield_preset" not in cols:
+                    conn.execute("ALTER TABLE matches ADD COLUMN shield_preset TEXT DEFAULT 'Normal';")
+                if "shield_balance_json" not in cols:
+                    conn.execute("ALTER TABLE matches ADD COLUMN shield_balance_json TEXT DEFAULT '{}';")
 
     # ------------------------------------------------------------------
     # Player Management
@@ -176,8 +223,9 @@ class ResultsDB:
         INSERT INTO matches (
             match_id, played_at, mode, p1_kind, p1_character, p1_difficulty,
             p2_kind, p2_character, p2_difficulty, winner_side, rounds_p1, rounds_p2,
-            duration_s, arena, seed, player_id, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            duration_s, arena, seed, player_id, status,
+            shield_enabled, shield_preset, shield_balance_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
         insert_round_sql = """
@@ -226,6 +274,9 @@ class ResultsDB:
                         match_data.get("seed"),
                         match_data.get("player_id"),
                         status,
+                        int(bool(match_data.get("shield_enabled", False))),
+                        str(match_data.get("shield_preset", "Normal")),
+                        json.dumps(match_data.get("shield_balance", {})),
                     )
                 )
                 if rounds_rows:
@@ -236,18 +287,18 @@ class ResultsDB:
     # ------------------------------------------------------------------
     # Statistics: Human Records & Streaks
     # ------------------------------------------------------------------
-    def get_human_record(self, player_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_human_record(self, player_id: Optional[int] = None, mode: Optional[str] = None) -> List[Dict[str, Any]]:
         """Return human record per opponent character and difficulty:
 
         played, wins, losses, draws, current streak, best streak.
-        Only 'finished' matches count.
+        Only 'finished' matches count. Optionally filtered by game mode.
         """
         with self.connection() as conn:
             cur = conn.cursor()
 
             # Query all finished human matches in chronological order
             query = """
-            SELECT match_id, played_at, p1_kind, p2_kind, p2_character, p2_difficulty,
+            SELECT match_id, played_at, mode, p1_kind, p2_kind, p2_character, p2_difficulty,
                    winner_side, player_id
             FROM matches
             WHERE status = 'finished' AND (p1_kind = 'human' OR p2_kind = 'human')
@@ -256,6 +307,9 @@ class ResultsDB:
             if player_id is not None:
                 query += " AND player_id = ?"
                 params.append(player_id)
+            if mode is not None:
+                query += " AND (mode = ? OR mode LIKE ?)"
+                params.extend([mode, f"%{mode}%"])
             query += " ORDER BY played_at ASC, rowid ASC"
 
             cur.execute(query, params)
@@ -322,8 +376,8 @@ class ResultsDB:
 
         return results
 
-    def get_last_matches(self, player_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
-        """Return the last N finished matches for the player."""
+    def get_last_matches(self, player_id: Optional[int] = None, limit: int = 10, mode: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return the last N finished matches for the player. Optionally filtered by mode."""
         with self.connection() as conn:
             cur = conn.cursor()
             query = """
@@ -336,6 +390,9 @@ class ResultsDB:
             if player_id is not None:
                 query += " AND player_id = ?"
                 params.append(player_id)
+            if mode is not None:
+                query += " AND (mode = ? OR mode LIKE ?)"
+                params.extend([mode, f"%{mode}%"])
             query += " ORDER BY played_at DESC, rowid DESC LIMIT ?"
             params.append(limit)
 
@@ -345,21 +402,26 @@ class ResultsDB:
     # ------------------------------------------------------------------
     # Statistics: AI Records & History
     # ------------------------------------------------------------------
-    def get_ai_record(self) -> List[Dict[str, Any]]:
+    def get_ai_record(self, mode: Optional[str] = None) -> List[Dict[str, Any]]:
         """Return record per AI character and difficulty:
 
         played, wins, losses, draws, split into 'vs human' and 'vs AI'.
-        Only 'finished' matches count.
+        Only 'finished' matches count. Optionally filtered by game mode.
         """
         with self.connection() as conn:
             cur = conn.cursor()
-            # Fetch all finished matches
-            cur.execute("""
-            SELECT match_id, p1_kind, p1_character, p1_difficulty,
+            query = """
+            SELECT match_id, mode, p1_kind, p1_character, p1_difficulty,
                    p2_kind, p2_character, p2_difficulty, winner_side
             FROM matches
             WHERE status = 'finished'
-            """)
+            """
+            params: List[Any] = []
+            if mode is not None:
+                query += " AND (mode = ? OR mode LIKE ?)"
+                params.extend([mode, f"%{mode}%"])
+
+            cur.execute(query, params)
             matches = [dict(r) for r in cur.fetchall()]
 
         # Key: (ai_character, difficulty, opponent_type) -> stats
@@ -520,6 +582,192 @@ class ResultsDB:
                     conn.execute("DELETE FROM rounds")
                     conn.execute("DELETE FROM matches")
 
+    # ------------------------------------------------------------------
+    # Economy & Progression (Campaign, Levels, Currency, Trophies)
+    # ------------------------------------------------------------------
+    def get_or_create_progress(self, player_id: int) -> Dict[str, Any]:
+        """Fetch player progression row, creating default row if nonexistent."""
+        with self.connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM progress WHERE player_id = ?", (player_id,))
+            row = cur.fetchone()
+            if row is None:
+                with conn:
+                    cur.execute(
+                        "INSERT INTO progress (player_id, coins) VALUES (?, 0)",
+                        (player_id,),
+                    )
+                cur.execute("SELECT * FROM progress WHERE player_id = ?", (player_id,))
+                row = cur.fetchone()
+            res = dict(row)
+            if isinstance(res.get("campaign_completed_battles"), str):
+                try:
+                    res["campaign_completed_battles"] = json.loads(res["campaign_completed_battles"])
+                except Exception:
+                    res["campaign_completed_battles"] = []
+            if isinstance(res.get("campaign_stars"), str):
+                try:
+                    res["campaign_stars"] = json.loads(res["campaign_stars"])
+                except Exception:
+                    res["campaign_stars"] = {}
+            return res
+
+    def add_coins(self, player_id: int, amount: int) -> int:
+        """Add coins to a player's balance and return new total."""
+        self.get_or_create_progress(player_id)
+        with self.connection() as conn:
+            with conn:
+                conn.execute(
+                    "UPDATE progress SET coins = coins + ? WHERE player_id = ?",
+                    (amount, player_id),
+                )
+            cur = conn.cursor()
+            cur.execute("SELECT coins FROM progress WHERE player_id = ?", (player_id,))
+            row = cur.fetchone()
+            return int(row["coins"]) if row else 0
+
+    def spend_coins(self, player_id: int, amount: int) -> bool:
+        """Deduct coins if balance is sufficient. Returns True on success."""
+        prog = self.get_or_create_progress(player_id)
+        if prog["coins"] < amount:
+            return False
+        with self.connection() as conn:
+            with conn:
+                conn.execute(
+                    """UPDATE progress 
+                       SET coins = coins - ?, total_coins_spent = total_coins_spent + ?
+                       WHERE player_id = ?""",
+                    (amount, amount, player_id),
+                )
+        return True
+
+    def get_character_level(self, player_id: int, character_name: str) -> int:
+        """Get character level (1-20) for a given player."""
+        prog = self.get_or_create_progress(player_id)
+        col = f"{character_name.lower()}_level"
+        return int(prog.get(col, 1))
+
+    def set_character_level(self, player_id: int, character_name: str, level: int) -> None:
+        """Set character level for a player."""
+        self.get_or_create_progress(player_id)
+        col = f"{character_name.lower()}_level"
+        with self.connection() as conn:
+            with conn:
+                conn.execute(f"UPDATE progress SET {col} = ? WHERE player_id = ?", (level, player_id))
+
+    def get_campaign_progress(self, player_id: int) -> Dict[str, Any]:
+        """Get campaign state: unlocked battle, completed battles list, stars dict."""
+        prog = self.get_or_create_progress(player_id)
+        return {
+            "unlocked_battle": prog.get("campaign_unlocked_battle", 1),
+            "completed_battles": prog.get("campaign_completed_battles", []),
+            "stars": prog.get("campaign_stars", {}),
+        }
+
+    def save_campaign_battle_result(self, player_id: int, battle_id: int, stars: int) -> None:
+        """Record victory in a campaign battle, updating stars and unlocking next."""
+        camp = self.get_campaign_progress(player_id)
+        unlocked = max(camp["unlocked_battle"], battle_id + 1)
+        completed = list(set(camp["completed_battles"] + [battle_id]))
+        star_dict = camp["stars"]
+        star_dict[str(battle_id)] = max(star_dict.get(str(battle_id), 0), stars)
+
+        with self.connection() as conn:
+            with conn:
+                conn.execute(
+                    """UPDATE progress 
+                       SET campaign_unlocked_battle = ?,
+                           campaign_completed_battles = ?,
+                           campaign_stars = ?
+                       WHERE player_id = ?""",
+                    (unlocked, json.dumps(completed), json.dumps(star_dict), player_id),
+                )
+
+    def unlock_trophy(self, player_id: int, trophy_id: str) -> bool:
+        """Unlock a trophy for a player. Returns True if freshly unlocked."""
+        with self.connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM trophies WHERE player_id = ? AND trophy_id = ?", (player_id, trophy_id))
+            if cur.fetchone():
+                return False
+            with conn:
+                conn.execute("INSERT OR IGNORE INTO trophies (player_id, trophy_id) VALUES (?, ?)", (player_id, trophy_id))
+            return True
+
+    def get_unlocked_trophy_ids(self, player_id: int) -> set[str]:
+        """Return set of unlocked trophy IDs for a player."""
+        with self.connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT trophy_id FROM trophies WHERE player_id = ?", (player_id,))
+            return {row["trophy_id"] for row in cur.fetchall()}
+
+    def get_missions(self, player_id: int) -> List[Dict[str, Any]]:
+        """Fetch all mission records for a player."""
+        with self.connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM missions WHERE player_id = ?", (player_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def update_mission(self, player_id: int, mission_id: str, delta: int, target: int) -> Tuple[bool, bool]:
+        """Update progress on a mission. Returns (is_completed, is_newly_completed)."""
+        with self.connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM missions WHERE player_id = ? AND mission_id = ?", (player_id, mission_id))
+            row = cur.fetchone()
+            if row is None:
+                new_prog = min(target, delta)
+                completed = 1 if new_prog >= target else 0
+                with conn:
+                    conn.execute(
+                        """INSERT INTO missions (player_id, mission_id, progress, target, completed)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (player_id, mission_id, new_prog, target, completed),
+                    )
+                return bool(completed), bool(completed)
+            else:
+                old_comp = bool(row["completed"])
+                new_prog = min(target, row["progress"] + delta)
+                new_comp = 1 if new_prog >= target else 0
+                with conn:
+                    conn.execute(
+                        """UPDATE missions 
+                           SET progress = ?, target = ?, completed = ?, updated_at = CURRENT_TIMESTAMP
+                           WHERE player_id = ? AND mission_id = ?""",
+                        (new_prog, target, new_comp, player_id, mission_id),
+                    )
+                return bool(new_comp), (not old_comp and bool(new_comp))
+
+    def claim_mission(self, player_id: int, mission_id: str) -> bool:
+        """Mark a completed mission as claimed. Returns True if successfully claimed."""
+        with self.connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM missions WHERE player_id = ? AND mission_id = ?", (player_id, mission_id))
+            row = cur.fetchone()
+            if not row or not row["completed"] or row["claimed"]:
+                return False
+            with conn:
+                conn.execute(
+                    "UPDATE missions SET claimed = 1 WHERE player_id = ? AND mission_id = ?",
+                    (player_id, mission_id),
+                )
+            return True
+
+
 
 # Singleton instance pointing to data/results.db
 results_db = ResultsDB()
+
+
+def __getattr__(name: str):
+    """Delegate module-level attribute lookups to the singleton `results_db` instance.
+
+    Prevents AttributeError if a caller does:
+        from backend.data import results_db
+        results_db.get_player(...)
+    instead of:
+        from backend.data.results_db import results_db
+    """
+    if hasattr(results_db, name):
+        return getattr(results_db, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+

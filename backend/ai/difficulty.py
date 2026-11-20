@@ -109,6 +109,9 @@ _NEXT_MODE = {
     "HELL": None,
 }
 
+# Module-level cache for learned models so disk/SQLite is queried once per character
+_LEARNED_MODEL_CACHE: Dict[str, tuple] = {}
+
 
 # ======================================================================
 # STEP 3: ADRENALINE (sharper as health drops, with smooth 5% transition)
@@ -340,18 +343,23 @@ class DifficultyWrapper(Agent):
                 self.mistake_chance = max(0.01, self.mistake_chance - 0.05)
 
     def _try_load_learned_model(self) -> None:
-        """Try to load the latest trained model for blending."""
+        """Try to load the latest trained model for blending (cached per personality)."""
+        char_name = self.inner.personality.name if self.inner.personality else "Crimson"
+        if char_name in _LEARNED_MODEL_CACHE:
+            self._learned_model, self._policy_agent = _LEARNED_MODEL_CACHE[char_name]
+            return
+
         try:
             from backend.learning.league import ModelRegistry
             from backend.learning.policy_agent import PolicyAgent
             reg = ModelRegistry()
-            char_name = self.inner.personality.name if self.inner.personality else "Crimson"
             live = reg.get_live_model(char_name)
             if live and os.path.exists(live["file_path"]):
                 self._learned_model = live
                 self._policy_agent = PolicyAgent(
                     char_name, model_path=live["file_path"], player=self.player
                 )
+                _LEARNED_MODEL_CACHE[char_name] = (self._learned_model, self._policy_agent)
                 return
         except Exception:
             pass
@@ -361,6 +369,7 @@ class DifficultyWrapper(Agent):
             self._learned_model = load_model()
         except Exception:
             self._learned_model = None
+        _LEARNED_MODEL_CACHE[char_name] = (self._learned_model, self._policy_agent)
 
     def reset(self) -> None:
         """Reset for a new round."""
@@ -468,12 +477,29 @@ class DifficultyWrapper(Agent):
             )
             if not is_decision_tick:
                 # Between decision ticks: hold movement/crouch, or IDLE if an attack was already triggered
-                if self._held_action in (Action.FORWARD, Action.BACK, Action.CROUCH):
+                if self._held_action in (Action.FORWARD, Action.BACK, Action.DASH, Action.BACKDASH, Action.CROUCH):
                     return self._held_action, self._last_scores
                 return Action.IDLE, self._last_scores
 
-            # 5. Hesitation check: stays idle for a beat with probability `prof.hesitation`
-            if not just_saw_attack and self.rng.random() < prof.hesitation:
+            # 4.5 Rumble macro-action check (Zone retreat, Build cover, Smash walls, Loot)
+            from backend.ai.rumble_ai import evaluate_rumble_macro
+            rumble_act = evaluate_rumble_macro(obs, self.inner.name, self.difficulty, self.rng)
+            if rumble_act is not None:
+                self._held_action = rumble_act
+                self._last_scores = {rumble_act: 10.0}
+                return rumble_act, self._last_scores
+
+            # 4.6 Shield Wall decision check
+            if obs.enable_shield_wall:
+                from backend.ai.shield_ai import evaluate_shield_action
+                shield_act = evaluate_shield_action(obs, self.inner.name, self.difficulty, self.rng)
+                if shield_act is not None:
+                    self._held_action = shield_act
+                    self._last_scores = {shield_act: 10.0}
+                    return shield_act, self._last_scores
+
+            # 5. Hesitation check: stays idle for a beat with probability `prof.hesitation` when in combat range
+            if not just_saw_attack and obs.distance <= 140 and self.rng.random() < prof.hesitation:
                 self._held_action = Action.IDLE
                 self._last_scores = {Action.IDLE: 5.0}
                 return Action.IDLE, self._last_scores

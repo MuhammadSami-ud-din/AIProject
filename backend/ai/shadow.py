@@ -33,6 +33,17 @@ class ShadowAgent(Agent):
 
     def choose_action(self, obs: Observation):
         """Score every allowed action, then pick one."""
+        from backend.ai.rumble_ai import evaluate_rumble_macro
+        rumble_act = evaluate_rumble_macro(obs, self.name, self.difficulty, self.rng)
+        if rumble_act is not None:
+            return rumble_act, {rumble_act: 10.0}
+
+        if obs.enable_shield_wall:
+            from backend.ai.shield_ai import evaluate_shield_action
+            shield_act = evaluate_shield_action(obs, self.name, self.difficulty, self.rng)
+            if shield_act is not None:
+                return shield_act, {shield_act: 10.0}
+
         scores = {}
         zone = self.zone_tracker.update(obs.distance)
         p = self.personality

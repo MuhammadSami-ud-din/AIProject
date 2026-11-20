@@ -41,6 +41,10 @@ DEFAULT_KEY_BINDINGS = {
     "block": pygame.K_l,
     "special": pygame.K_o,
     "super": pygame.K_p,
+    "build": pygame.K_b,
+    "pickup": pygame.K_e,
+    "shield_front": pygame.K_q,
+    "shield_back": pygame.K_e,
 }
 
 
@@ -68,10 +72,11 @@ class InputHandler:
             self.buffer.popleft()
 
     def get_action(self, enemy_x: float, my_x: float, in_air: bool = False,
-                   can_act: bool = True) -> Action:
+                   can_act: bool = True, keys=None, enable_shield_wall: bool = False) -> Action:
         """Evaluate key states, buffer new presses, and return the chosen Action."""
         self.update_frame()
-        keys = pygame.key.get_pressed()
+        if keys is None:
+            keys = pygame.key.get_pressed()
 
         b = self.bindings
         facing_right = enemy_x >= my_x
@@ -118,6 +123,16 @@ class InputHandler:
         # 2. Super (P)
         elif "super" in just_pressed:
             new_action = Action.SUPER
+
+        # 2.5 Shield Wall Actions (Q = Front, E = Back) & Rumble Actions (B = Build, E = Pickup)
+        elif enable_shield_wall and "shield_front" in just_pressed:
+            new_action = Action.SHIELD_FRONT
+        elif enable_shield_wall and "shield_back" in just_pressed:
+            new_action = Action.SHIELD_BACK
+        elif "build" in just_pressed:
+            new_action = Action.BUILD
+        elif "pickup" in just_pressed:
+            new_action = Action.PICKUP
 
         # 3. Specials (O + Direction)
         elif "special" in just_pressed:
@@ -210,6 +225,8 @@ _global_handler = InputHandler()
 
 
 def get_human_action(enemy_x: float, my_x: float, in_air: bool = False,
-                     can_act: bool = True) -> Action:
+                     can_act: bool = True, enable_shield_wall: bool = False) -> Action:
     """Backward-compatible functional interface for human action lookup."""
-    return _global_handler.get_action(enemy_x, my_x, in_air=in_air, can_act=can_act)
+    return _global_handler.get_action(
+        enemy_x, my_x, in_air=in_air, can_act=can_act, enable_shield_wall=enable_shield_wall
+    )

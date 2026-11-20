@@ -78,6 +78,21 @@ class GoldenAgent(Agent):
 
     def choose_action(self, obs: Observation):
         """Score every allowed action using adapted likes, then pick one."""
+        from backend.ai.rumble_ai import evaluate_rumble_macro
+        rumble_act = evaluate_rumble_macro(obs, self.name, self.difficulty, self.rng)
+        if rumble_act is not None:
+            return rumble_act, {rumble_act: 10.0}
+
+        if obs.enable_shield_wall:
+            from backend.ai.shield_ai import evaluate_shield_action
+            attack_rate = sum(self.enemy_action_counts.get(a, 0) for a in ATTACKS) / max(1, self.total_observations)
+            pred_attack = (attack_rate > 0.35 and obs.distance <= obs.enemy_reach + 60.0) or obs.enemy_is_attacking
+            shield_act = evaluate_shield_action(
+                obs, self.name, self.difficulty, self.rng, predicted_enemy_attack=pred_attack
+            )
+            if shield_act is not None:
+                return shield_act, {shield_act: 10.0}
+
         scores = {}
         zone = self.zone_tracker.update(obs.distance)
         p = self.personality

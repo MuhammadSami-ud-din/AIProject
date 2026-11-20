@@ -224,17 +224,46 @@ def check_hit(attacker: FighterState, defender: FighterState, move: MoveData) ->
 
 
 def apply_damage(defender: FighterState, damage: float,
-                 is_blocking: bool, blocked_damage_ratio: float) -> float:
-    """Apply damage to the defender and reduce health."""
+                 is_blocking: bool, blocked_damage_ratio: float,
+                 attacker: FighterState | None = None) -> float:
+    """Apply damage to the defender and reduce health.
+
+    Takes into account attacker damage multiplier, defender health multiplier,
+    and block multiplier in a backward-compatible manner (defaults to 1.0).
+    """
+    dmg_mult = getattr(attacker, "damage_mult", 1.0) if attacker is not None else 1.0
+    h_mult = getattr(defender, "health_mult", 1.0)
+    if h_mult <= 0:
+        h_mult = 1.0
+    b_mult = getattr(defender, "block_mult", 1.0)
+    if b_mult <= 0:
+        b_mult = 1.0
+
+    scaled_damage = damage * dmg_mult
+
     if is_blocking and not defender.in_air:
-        actual_damage = damage * blocked_damage_ratio
+        # Better block_mult reduces blocked chip damage
+        effective_ratio = blocked_damage_ratio / b_mult
+        actual_damage = scaled_damage * effective_ratio
     else:
-        actual_damage = damage
+        actual_damage = scaled_damage
+
+    # Larger health pool mathematically achieved by dividing incoming damage by health_mult
+    actual_damage = actual_damage / h_mult
 
     # Armor absorbs hit: takes 50% damage
     if defender.armor_hits > 0:
         actual_damage *= 0.5
         defender.armor_hits -= 1
 
+    # Shield absorption (Rumble mode Shield Cell)
+    if defender.shield > 0.0:
+        damage_hp = actual_damage * 100.0
+        absorbed_hp = min(defender.shield, damage_hp)
+        defender.shield -= absorbed_hp
+        actual_damage = (damage_hp - absorbed_hp) / 100.0
+
     defender.health = max(0.0, defender.health - actual_damage)
+    if actual_damage > 0.0:
+        defender.no_hit_timer = 0
     return actual_damage

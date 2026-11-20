@@ -59,6 +59,8 @@ def get_action_mask(fighter: FighterState, enemy: FighterState, player: int = 1)
     actionable = can_act(fighter)
 
     for act in ALL_ACTIONS:
+        if act.value >= ACTION_DIM:
+            continue
         if act == Action.IDLE:
             continue
 

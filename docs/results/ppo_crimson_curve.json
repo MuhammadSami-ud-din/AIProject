@@ -1,7 +1,7 @@
 {
   "personality": "Crimson",
   "seed": 101,
-  "git_commit": "2daebbc",
+  "git_commit": "b15ed08",
   "history": [
     {
       "update": 1,
@@ -10,7 +10,7 @@
       "policy_loss": -0.008406585548073053,
       "value_loss": 0.9120784997940063,
       "entropy": 2.25601464509964,
-      "elapsed_time": 0.10903167724609375
+      "elapsed_time": 0.17578125
     },
     {
       "update": 2,
@@ -19,7 +19,7 @@
       "policy_loss": -0.001663925126194954,
       "value_loss": 0.5605373829603195,
       "entropy": 2.0276123881340027,
-      "elapsed_time": 0.21169734001159668
+      "elapsed_time": 0.3464961051940918
     },
     {
       "update": 3,
@@ -28,7 +28,7 @@
       "policy_loss": -0.0007433954160660505,
       "value_loss": 0.890899121761322,
       "entropy": 2.049219012260437,
-      "elapsed_time": 0.3132436275482178
+      "elapsed_time": 0.5142872333526611
     }
   ]
 }
