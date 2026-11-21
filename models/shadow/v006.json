@@ -1,17 +1,17 @@
 {
   "personality": "Shadow",
   "version": 6,
-  "total_steps": 3072,
-  "git_commit": "2daebbc",
+  "total_steps": 768,
+  "git_commit": "c6e324b",
   "seed": 42,
-  "timestamp": 1794819937.894323,
+  "timestamp": 1795248709.7304075,
   "latest_metrics": {
     "update": 6,
-    "total_steps": 3072,
-    "mean_reward": 0.9503906965255737,
-    "policy_loss": -0.016398908162955195,
-    "value_loss": 128.3544111251831,
-    "entropy": 2.0505475997924805,
-    "elapsed_time": 0.9847366809844971
+    "total_steps": 768,
+    "mean_reward": 0.7839452028274536,
+    "policy_loss": 0.00015628430992364883,
+    "value_loss": 56.801867961883545,
+    "entropy": 1.701836884021759,
+    "elapsed_time": 0.2439875602722168
   }
 }

@@ -24,7 +24,7 @@ import pygame
 
 from backend.ai.actions import Action
 
-BUFFER_WINDOW = 6        # Frames an input press is remembered
+BUFFER_WINDOW = 10       # Frames an input press is remembered
 DOUBLE_TAP_WINDOW = 16   # Frames between taps to register a dash
 
 

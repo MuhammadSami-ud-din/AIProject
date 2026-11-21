@@ -1,9 +1,17 @@
 {
   "personality": "Crimson",
   "version": 1,
-  "total_steps": 0,
-  "git_commit": "b15ed08",
+  "total_steps": 128,
+  "git_commit": "c6e324b",
   "seed": 42,
-  "timestamp": 1795075109.0562816,
-  "latest_metrics": {}
+  "timestamp": 1795248641.073586,
+  "latest_metrics": {
+    "update": 1,
+    "total_steps": 128,
+    "mean_reward": 0.6571484208106995,
+    "policy_loss": -0.004550161771476269,
+    "value_loss": 163.0694065093994,
+    "entropy": 1.3518948704004288,
+    "elapsed_time": 0.28661441802978516
+  }
 }

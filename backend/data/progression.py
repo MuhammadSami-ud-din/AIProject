@@ -11,25 +11,26 @@ from typing import Any, Dict, List, Optional, Tuple
 from backend.data.results_db import results_db
 
 # ----------------------------------------------------------------------
-# Reward Configuration
+# Reward Configuration (Balanced, worthy coin economy)
 # ----------------------------------------------------------------------
 REWARD_CONFIG = {
-    "win_base": 150,
-    "loss_base": 40,
-    "round_win": 35,
-    "damage_scale": 120.0,      # damage_dealt_p1 (0.0 - 2.0) * 120
-    "combo_scale": 12,          # longest_combo * 12
-    "block_scale": 4,           # blocks_p1 * 4
-    "flawless_round": 75,       # per round won with 0 damage taken
-    "perfect_match": 150,       # entire match won without damage
-    "speed_bonus_max": 80,      # bonus for fast wins (under 45s)
+    "win_base": 45,
+    "loss_base": 10,
+    "round_win": 15,
+    "damage_scale": 25.0,       # normalized damage_dealt_p1 (0.0 - 2.0) * 25
+    "combo_scale": 4,           # longest_combo * 4
+    "block_scale": 2,           # blocks_p1 * 2 (capped at 15 blocks)
+    "flawless_round": 25,       # per round won with 0 damage taken
+    "perfect_match": 50,        # entire match won without damage
+    "speed_bonus_max": 25,      # bonus for fast wins (under 45s)
     "difficulty_mult": {
         "LOW": 1.0,
         "MEDIUM": 1.25,
         "HIGH": 1.5,
         "HELL": 2.0,
     },
-    "level_diff_bonus": 15,     # per opponent level above player
+    "level_diff_bonus": 10,     # per opponent level above player
+    "max_match_payout": 350,    # hard ceiling per match
 }
 
 MAX_LEVEL = 20
@@ -68,13 +69,29 @@ def calculate_match_rewards(
 ) -> Dict[str, Any]:
     """Calculate itemized coin rewards for the human player after a match."""
     is_win = (stats.get("winner_side") == 1)
-    rounds_won = stats.get("rounds_p1", 0)
-    damage_dealt = stats.get("damage_dealt_p1", 0.0)
-    longest_combo = stats.get("longest_combo_p1", 0)
-    blocks = stats.get("blocks_p1", 0)
-    damage_taken = stats.get("damage_dealt_p2", 0.0)
-    duration = stats.get("duration_s", 60.0)
-    difficulty = stats.get("p2_difficulty", "LOW")
+    rounds_won = max(0, min(5, int(stats.get("rounds_p1", 0) or 0)))
+
+    # Normalize damage from 0..200 HP scale to 0.0..2.0 health fraction if needed
+    raw_dmg = float(stats.get("damage_dealt_p1", 0.0) or 0.0)
+    damage_dealt = (raw_dmg / 100.0) if raw_dmg > 10.0 else raw_dmg
+    damage_dealt = max(0.0, min(3.0, damage_dealt))
+
+    raw_taken = float(stats.get("damage_dealt_p2", 0.0) or 0.0)
+    damage_taken = (raw_taken / 100.0) if raw_taken > 10.0 else raw_taken
+
+    longest_combo = max(0, min(20, int(stats.get("longest_combo_p1", 0) or 0)))
+    blocks = max(0, min(15, int(stats.get("blocks_p1", 0) or 0)))
+    hits_landed = int(stats.get("hits_landed_p1", 0) or 0)
+    duration = float(stats.get("duration_s", 60.0) or 60.0)
+    difficulty = str(stats.get("p2_difficulty", "LOW") or "LOW")
+
+    # Zero-effort check: no free coins for standing still and losing
+    if not is_win and rounds_won == 0 and damage_dealt < 0.05 and hits_landed == 0 and longest_combo < 2:
+        return {
+            "total_coins": 0,
+            "breakdown": [("No Combat Effort", 0)],
+            "is_win": False,
+        }
 
     diff_mult = REWARD_CONFIG["difficulty_mult"].get(difficulty, 1.0)
     breakdown: List[Tuple[str, int]] = []
@@ -104,7 +121,7 @@ def calculate_match_rewards(
         breakdown.append((f"Guards & Parries ({blocks}x)", blk_val))
 
     # 6. Flawless & Perfect
-    flawless_rounds = stats.get("flawless_rounds_p1", 0)
+    flawless_rounds = max(0, min(3, int(stats.get("flawless_rounds_p1", 0) or 0)))
     if is_win and damage_taken <= 0.001:
         breakdown.append(("Perfect Match Victory!", REWARD_CONFIG["perfect_match"]))
     elif flawless_rounds > 0:
@@ -123,10 +140,10 @@ def calculate_match_rewards(
         breakdown.append((f"Underdog Bonus (+{opponent_level - player_level} Lvls)", lvl_bonus))
 
     subtotal = sum(v for _, v in breakdown)
-    total = int(subtotal * diff_mult)
+    total = min(REWARD_CONFIG["max_match_payout"], int(subtotal * diff_mult))
 
     if diff_mult > 1.0:
-        breakdown.append((f"Difficulty Multiplier ({difficulty} x{diff_mult})", total - subtotal))
+        breakdown.append((f"Difficulty Multiplier ({difficulty} x{diff_mult})", max(1, total - subtotal)))
 
     return {
         "total_coins": total,

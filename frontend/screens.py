@@ -1095,9 +1095,13 @@ def results_screen(surface, clock, stats_or_result, p1_name=None, p2_name=None,
             player_level=stats.get("p1_level", 1),
             opponent_level=stats.get("p2_level", 1),
         )
-        def_player = results_db.get_default_player()
-        if def_player:
-            results_db.add_coins(int(def_player["player_id"]), reward_info["total_coins"])
+        if "PYTEST_CURRENT_TEST" not in os.environ and reward_info["total_coins"] > 0:
+            target_pid = stats.get("player_id")
+            if target_pid is None:
+                def_player = results_db.get_default_player()
+                target_pid = int(def_player["player_id"]) if def_player else None
+            if target_pid is not None:
+                results_db.add_coins(int(target_pid), reward_info["total_coins"])
 
     # Font: Exactly one font family across 3 sizes only
     font_title = pygame.font.Font(None, 52)

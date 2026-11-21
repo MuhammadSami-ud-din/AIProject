@@ -243,3 +243,331 @@ def train_q_agent(episodes=100, seed=42):
         })
 
     return q_table, history
+
+
+# ======================================================================
+# Online Combat Reinforcement Learner (Anti-Exploit & Move Diversity)
+# ======================================================================
+
+from collections import deque
+from typing import Dict, Optional, Tuple
+from backend.ai.actions import ATTACKS, DEFENCE
+
+HIGH_MID_ATTACKS = (
+    Action.LIGHT,
+    Action.HEAVY,
+    Action.LIGHT_KICK,
+    Action.HEAVY_KICK,
+    Action.SPECIAL_FORWARD,
+    Action.SPECIAL_NEUTRAL,
+    Action.SPECIAL_BACK,
+    Action.SUPER,
+)
+LOW_ATTACKS = (
+    Action.LOW_SWEEP,
+    Action.CROUCH_KICK,
+    Action.CROUCH_JAB,
+    Action.CROUCH,
+)
+AIR_MOVES = (
+    Action.JUMP,
+    Action.JUMP_KICK,
+    Action.JUMP_PUNCH,
+)
+OVERHEAD_MOVES = (
+    Action.OVERHEAD,
+)
+
+
+def combat_rl_key(obs: Observation, last_enemy_move: Action) -> Tuple:
+    """Compact tactical state key for live in-match Q-learning."""
+    zone = zone_of(obs.distance)
+    if obs.enemy_in_air:
+        enemy_posture = "air"
+    elif obs.enemy_is_crouching:
+        enemy_posture = "crouch"
+    elif obs.enemy_is_blocking:
+        enemy_posture = "block"
+    elif obs.enemy_is_attacking:
+        enemy_posture = "attack"
+    elif obs.enemy_is_stuck:
+        enemy_posture = "stuck"
+    else:
+        enemy_posture = "stand"
+    return (zone, enemy_posture, last_enemy_move)
+
+
+class OnlineCombatLearner:
+    """Live Q-learning + opponent habit counter-adapter + move diversity manager.
+
+    - Learns Q(s, a) online from real damage dealt, damage taken, blocks, and whiffs.
+    - Detects when the opponent repeats the same move or tactic (spamming high attacks,
+      low sweeps, jump-ins, crouch pokes, or turtle blocking) and boosts direct counters.
+    - Penalizes self-repetition so the AI rotates through all of its attack moves
+      according to their probabilities instead of spamming a single attack.
+    """
+
+    def __init__(self, alpha: float = 0.28, gamma: float = 0.85):
+        self.alpha = alpha
+        self.gamma = gamma
+        self.q_table = QTable()
+
+        # Sliding windows of meaningful (non-IDLE) actions
+        self.recent_enemy_moves: deque[Action] = deque(maxlen=18)
+        self.my_recent_attacks: deque[Action] = deque(maxlen=8)
+        self.transition_counts: Dict[Tuple, Dict[Action, float]] = {}
+
+        self._last_enemy_recorded: Action = Action.IDLE
+        self._frames_since_enemy_record: int = 0
+        self._prev_enemy_move: Action = Action.IDLE
+
+        # Active RL transition tracking
+        self._pending_key: Optional[Tuple] = None
+        self._pending_action: Optional[Action] = None
+        self._pending_my_hp: float = 1.0
+        self._pending_enemy_hp: float = 1.0
+        self._pending_frames: int = 0
+        self._consecutive_blocked_attacks: int = 0
+
+    def reset_round(self) -> None:
+        """Reset transient round pointers while preserving learned Q-values and habits."""
+        self._pending_key = None
+        self._pending_action = None
+        self._pending_my_hp = 1.0
+        self._pending_enemy_hp = 1.0
+        self._pending_frames = 0
+        self._frames_since_enemy_record = 0
+        self.my_recent_attacks.clear()
+
+    def _update_q(self, key: Tuple, action: Action, reward: float, next_key: Tuple) -> None:
+        old_q = self.q_table.get(key, action)
+        if next_key in self.q_table.table:
+            max_next = max(self.q_table.table[next_key].values())
+        else:
+            max_next = 0.0
+        new_q = old_q + self.alpha * (reward + self.gamma * max_next - old_q)
+        # Clamp Q-values to [-5.0, +5.0] so they blend smoothly with heuristic scores
+        self.q_table.set(key, action, max(-5.0, min(5.0, new_q)))
+        self.q_table.visits[key] = self.q_table.visits.get(key, 0) + 1
+
+    def record_decision(self, obs: Observation, chosen_action: Action) -> None:
+        """Record the AI's chosen decision so the outcome can be reinforced on subsequent frames."""
+        if chosen_action in ATTACKS:
+            self.my_recent_attacks.append(chosen_action)
+
+        if chosen_action != Action.IDLE:
+            self._pending_key = combat_rl_key(obs, self._last_enemy_recorded)
+            self._pending_action = chosen_action
+            self._pending_my_hp = obs.my_health
+            self._pending_enemy_hp = obs.enemy_health
+            self._pending_frames = 0
+
+    def observe(self, obs: Observation, my_action: Action, enemy_action: Action) -> None:
+        """Observe frame outcome, update opponent habit model, and perform TD Q-learning step."""
+        self._frames_since_enemy_record += 1
+
+        # 1. Identify enemy's active move (do not let filler IDLE frames erase active attacks/stances)
+        explicit_press = (enemy_action != Action.IDLE)
+        eff_enemy = enemy_action
+        if not explicit_press and obs.enemy_last_action != Action.IDLE:
+            if obs.enemy_is_attacking or obs.enemy_in_air or obs.enemy_is_crouching or obs.enemy_is_blocking:
+                eff_enemy = obs.enemy_last_action
+
+        should_record = (
+            eff_enemy != Action.IDLE
+            and (
+                explicit_press
+                or eff_enemy != self._last_enemy_recorded
+                or self._frames_since_enemy_record >= 12
+            )
+        )
+        if should_record:
+            zone = zone_of(obs.distance)
+            t_key = (zone, self._prev_enemy_move)
+            if t_key not in self.transition_counts:
+                self.transition_counts[t_key] = {}
+            self.transition_counts[t_key][eff_enemy] = self.transition_counts[t_key].get(eff_enemy, 0.0) + 1.0
+
+            self._prev_enemy_move = self._last_enemy_recorded
+            self._last_enemy_recorded = eff_enemy
+            self.recent_enemy_moves.append(eff_enemy)
+            self._frames_since_enemy_record = 0
+
+        # 2. Evaluate pending RL transition
+        if self._pending_key is None or self._pending_action is None:
+            return
+
+        self._pending_frames += 1
+        my_dmg_taken = max(0.0, self._pending_my_hp - obs.my_health)
+        enemy_dmg_taken = max(0.0, self._pending_enemy_hp - obs.enemy_health)
+
+        # Resolve transition when damage occurs or after a 10-frame action evaluation window
+        if my_dmg_taken > 0.001 or enemy_dmg_taken > 0.001 or self._pending_frames >= 10:
+            reward = 0.0
+            cur_key = combat_rl_key(obs, self._last_enemy_recorded)
+
+            if enemy_dmg_taken > 0.001:
+                if obs.enemy_blockstun > 0 or obs.enemy_is_blocking:
+                    self._consecutive_blocked_attacks += 1
+                    # Penalize hammering into a blocking opponent repeatedly so AI switches to throws/lows/overheads
+                    if self._consecutive_blocked_attacks >= 2:
+                        reward -= 0.75 * min(3, self._consecutive_blocked_attacks)
+                        for guard_breaker in (Action.THROW, Action.LOW_SWEEP, Action.OVERHEAD, Action.SPECIAL_DOWN, Action.SPECIAL_NEUTRAL):
+                            self._update_q(self._pending_key, guard_breaker, 1.15, cur_key)
+                    else:
+                        reward += 2.0 * enemy_dmg_taken
+                else:
+                    self._consecutive_blocked_attacks = 0
+                    reward += 22.0 * enemy_dmg_taken + 1.1
+
+            if my_dmg_taken > 0.001:
+                reward -= (24.0 * my_dmg_taken + 1.3)
+                # Direct counter-reinforcement: teach Q-table what would have beaten eff_enemy
+                for counter_act in self.counters_for(self._last_enemy_recorded, obs):
+                    self._update_q(self._pending_key, counter_act, 1.45, cur_key)
+
+            if my_dmg_taken <= 0.001 and enemy_dmg_taken <= 0.001:
+                if self._pending_action in (Action.BLOCK, Action.BLOCK_LOW) and obs.enemy_is_attacking and obs.distance <= 130:
+                    reward += 0.85
+                elif self._pending_action in ATTACKS and obs.distance <= 115:
+                    # Whiffed or stuffed attack
+                    reward -= 0.40
+
+            if abs(reward) > 1e-4:
+                self._update_q(self._pending_key, self._pending_action, reward, cur_key)
+
+            self._pending_key = None
+            self._pending_action = None
+
+    def counters_for(self, enemy_move: Action, obs: Observation) -> Tuple[Action, ...]:
+        """Return the set of direct tactical counter-moves against a specific enemy move."""
+        if enemy_move in AIR_MOVES or obs.enemy_in_air:
+            return (Action.ANTI_AIR, Action.SPECIAL_NEUTRAL, Action.BLOCK, Action.BACKDASH)
+        if enemy_move in LOW_ATTACKS:
+            return (Action.BLOCK_LOW, Action.OVERHEAD, Action.JUMP_KICK, Action.JUMP_PUNCH, Action.LOW_SWEEP)
+        if enemy_move in OVERHEAD_MOVES:
+            return (Action.BLOCK, Action.LIGHT, Action.ANTI_AIR, Action.SPECIAL_DOWN)
+        if enemy_move in DEFENCE:
+            if enemy_move == Action.BLOCK_LOW or obs.enemy_is_crouching:
+                return (Action.OVERHEAD, Action.THROW, Action.SPECIAL_DOWN, Action.JUMP_KICK)
+            return (Action.THROW, Action.LOW_SWEEP, Action.CROUCH_KICK, Action.SPECIAL_DOWN, Action.SPECIAL_NEUTRAL)
+        if enemy_move == Action.THROW:
+            return (Action.THROW, Action.LIGHT, Action.CROUCH_JAB, Action.BACKDASH, Action.JUMP_KICK)
+        if enemy_move in HIGH_MID_ATTACKS:
+            return (
+                Action.BLOCK,
+                Action.LIGHT,
+                Action.LIGHT_KICK,
+                Action.CROUCH_JAB,
+                Action.CROUCH_KICK,
+                Action.LOW_SWEEP,
+                Action.SPECIAL_DOWN,
+                Action.SPECIAL_BACK,
+            )
+        return (Action.LIGHT, Action.LIGHT_KICK, Action.HEAVY_KICK)
+
+    def detect_spam(self, obs: Observation) -> Tuple[Optional[Action], float]:
+        """Detect if the opponent is repeating a specific move or category.
+
+        Returns (dominant_action, spam_intensity in 0.0..1.0).
+        """
+        if len(self.recent_enemy_moves) < 3:
+            return None, 0.0
+
+        recent = list(self.recent_enemy_moves)[-10:]
+        counts: Dict[Action, int] = {}
+        for m in recent:
+            counts[m] = counts.get(m, 0) + 1
+
+        top_move = max(counts, key=lambda a: counts[a])
+        top_ratio = counts[top_move] / float(len(recent))
+
+        # Check immediate last-4 streak
+        tail = recent[-4:]
+        tail_count = sum(1 for m in tail if m == top_move)
+        streak_ratio = tail_count / float(len(tail))
+
+        # Also check Markov transition prediction
+        zone = zone_of(obs.distance)
+        t_counts = self.transition_counts.get((zone, self._last_enemy_recorded), {})
+        if t_counts:
+            t_total = sum(t_counts.values())
+            t_best = max(t_counts, key=lambda a: t_counts[a])
+            t_prob = t_counts[t_best] / max(1.0, t_total)
+            if t_total >= 2 and t_prob >= 0.55:
+                return t_best, min(1.0, max(top_ratio, t_prob))
+
+        intensity = max(top_ratio, streak_ratio * 0.9)
+        if intensity >= 0.34:
+            return top_move, min(1.0, intensity)
+        return None, 0.0
+
+    def adjust_scores(
+        self,
+        scores: Dict[Action, float],
+        obs: Observation,
+        difficulty: str = "LOW",
+    ) -> Tuple[Dict[Action, float], float]:
+        """Apply live Q-learning values, anti-spam counter boosts, and move-diversity penalties.
+
+        Returns (adjusted_scores, spam_intensity).
+        """
+        adjusted = dict(scores)
+        key = combat_rl_key(obs, self._last_enemy_recorded)
+
+        # Difficulty weight on RL adaptation (active on ALL difficulties, strongest on HIGH/HELL)
+        rl_weight = {"LOW": 0.75, "MEDIUM": 1.0, "HIGH": 1.35, "HELL": 1.65}.get(difficulty, 1.0)
+
+        # 1. Add learned Q(s, a) values for every available action
+        if key in self.q_table.table:
+            for act, q_val in self.q_table.table[key].items():
+                if act in adjusted and adjusted[act] > 0.05:
+                    adjusted[act] = max(0.05, adjusted[act] + q_val * rl_weight)
+
+        # 2. Detect repeated player moves/habits and boost direct tactical counters
+        spam_move, spam_intensity = self.detect_spam(obs)
+        if spam_move is not None and spam_intensity >= 0.34:
+            counter_boost = (2.8 + 3.5 * spam_intensity) * rl_weight
+            counters = self.counters_for(spam_move, obs)
+            for c_act in counters:
+                if c_act in adjusted:
+                    # Only boost attacks if in or near range, or defense/movement anytime
+                    if c_act in DEFENCE or c_act in (Action.BACKDASH, Action.JUMP):
+                        if obs.distance <= 150:
+                            adjusted[c_act] += counter_boost * 0.95
+                    elif c_act == Action.THROW:
+                        if obs.distance <= 55 and obs.can_attack and not obs.my_in_air:
+                            adjusted[c_act] += counter_boost * 1.15
+                    elif c_act in (Action.ANTI_AIR, Action.SPECIAL_NEUTRAL) and (obs.enemy_in_air or spam_move in AIR_MOVES):
+                        if obs.distance <= 115 and obs.can_attack and not obs.my_in_air:
+                            adjusted[c_act] += counter_boost * 1.25
+                    elif obs.can_attack and obs.distance <= 115:
+                        adjusted[c_act] += counter_boost
+
+        # 3. Self-Repetition / Staleness Penalty so AI uses ALL its attack moves according to chances
+        if self.my_recent_attacks:
+            recent_counts: Dict[Action, int] = {}
+            # Recent moves weighted more heavily
+            for idx, act in enumerate(self.my_recent_attacks):
+                weight = 2 if idx >= len(self.my_recent_attacks) - 3 else 1
+                recent_counts[act] = recent_counts.get(act, 0) + weight
+
+            last_atk = self.my_recent_attacks[-1]
+            for act, cnt in recent_counts.items():
+                if act in adjusted and act in ATTACKS and adjusted[act] > 0.5:
+                    decay = (0.76 ** cnt) * (0.78 if act == last_atk else 1.0)
+                    adjusted[act] *= max(0.28, decay)
+
+        return adjusted, spam_intensity
+
+
+# Shared per-character live learners so the AI keeps its learned Q-table across rounds and rematches
+_SHARED_COMBAT_LEARNERS: Dict[str, OnlineCombatLearner] = {}
+
+
+def get_shared_combat_learner(character_name: str) -> OnlineCombatLearner:
+    """Return the persistent OnlineCombatLearner for a given fighter."""
+    key = (character_name or "Default").strip().title()
+    if key not in _SHARED_COMBAT_LEARNERS:
+        _SHARED_COMBAT_LEARNERS[key] = OnlineCombatLearner()
+    return _SHARED_COMBAT_LEARNERS[key]

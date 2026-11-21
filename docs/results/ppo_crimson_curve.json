@@ -1,34 +1,61 @@
 {
   "personality": "Crimson",
-  "seed": 101,
-  "git_commit": "b15ed08",
+  "seed": 42,
+  "git_commit": "c6e324b",
   "history": [
     {
       "update": 1,
-      "total_steps": 64,
-      "mean_reward": -0.13968750834465027,
-      "policy_loss": -0.008406585548073053,
-      "value_loss": 0.9120784997940063,
-      "entropy": 2.25601464509964,
-      "elapsed_time": 0.17578125
+      "total_steps": 128,
+      "mean_reward": 0.6571484208106995,
+      "policy_loss": -0.004550161771476269,
+      "value_loss": 163.0694065093994,
+      "entropy": 1.3518948704004288,
+      "elapsed_time": 0.28661441802978516
     },
     {
       "update": 2,
-      "total_steps": 128,
-      "mean_reward": -0.11437499523162842,
-      "policy_loss": -0.001663925126194954,
-      "value_loss": 0.5605373829603195,
-      "entropy": 2.0276123881340027,
-      "elapsed_time": 0.3464961051940918
+      "total_steps": 256,
+      "mean_reward": 0.0004688054323196411,
+      "policy_loss": -0.002054441603831947,
+      "value_loss": 91.46829891204834,
+      "entropy": 1.2314248085021973,
+      "elapsed_time": 0.25872135162353516
     },
     {
       "update": 3,
-      "total_steps": 192,
-      "mean_reward": -0.12476561963558197,
-      "policy_loss": -0.0007433954160660505,
-      "value_loss": 0.890899121761322,
-      "entropy": 2.049219012260437,
-      "elapsed_time": 0.5142872333526611
+      "total_steps": 384,
+      "mean_reward": -0.17582029104232788,
+      "policy_loss": -0.016806211322546005,
+      "value_loss": 123.50011444091797,
+      "entropy": 1.399358794093132,
+      "elapsed_time": 0.2776196002960205
+    },
+    {
+      "update": 4,
+      "total_steps": 512,
+      "mean_reward": 0.8187500238418579,
+      "policy_loss": 0.001854943111538887,
+      "value_loss": 126.90059566497803,
+      "entropy": 1.3552298694849014,
+      "elapsed_time": 0.2327737808227539
+    },
+    {
+      "update": 5,
+      "total_steps": 640,
+      "mean_reward": 1.2014453411102295,
+      "policy_loss": -0.0030972007662057877,
+      "value_loss": 203.96228790283203,
+      "entropy": 1.372137412428856,
+      "elapsed_time": 0.24966168403625488
+    },
+    {
+      "update": 6,
+      "total_steps": 768,
+      "mean_reward": 1.015625,
+      "policy_loss": -0.004299448570236564,
+      "value_loss": 169.24599266052246,
+      "entropy": 1.3667438477277756,
+      "elapsed_time": 0.2527883052825928
     }
   ]
 }

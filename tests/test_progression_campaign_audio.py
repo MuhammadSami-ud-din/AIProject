@@ -402,3 +402,103 @@ def test_tutorial_and_story_screens_headless():
     res = story_screen(surface, clock, get_battle(1), "Crimson")
     assert res is True
 
+    # Test Battle 2 ("The Obsidian Bastion") sequential SPACE/ENTER dialogue bubbles
+    from backend.data.campaign import get_battle_dialogue
+    b2 = get_battle(2)
+    assert b2["title"] == "The Obsidian Bastion"
+    assert b2["opponent"] == "Steel"
+    steps = get_battle_dialogue(b2, "Crimson")
+    assert len(steps) == 4
+    assert steps[0]["type"] == "narration" and steps[0]["side"] == "center"
+    assert steps[1]["type"] == "dialogue" and steps[1]["side"] == "left" and steps[1]["speaker"] == "CRIMSON"
+    assert steps[2]["type"] == "dialogue" and steps[2]["side"] == "right" and steps[2]["speaker"] == "STEEL"
+    assert steps[3]["type"] == "dialogue" and steps[3]["side"] == "left" and steps[3]["speaker"] == "CRIMSON"
+
+    # Simulate stepping through all 4 steps via SPACE / ENTER (2 presses per step: complete typewriter + advance)
+    pygame.event.clear()
+    for idx in range(len(steps)):
+        key = pygame.K_SPACE if idx % 2 == 0 else pygame.K_RETURN
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": key}))
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": key}))
+    res_seq = story_screen(surface, clock, b2, "Crimson")
+    assert res_seq is True
+
+
+def test_online_rl_anti_spam_and_diverse_attack_selection():
+    """Verify AI adapts via online Q-learning against repeated player moves and rotates through diverse attacks."""
+    from backend.ai.actions import ATTACKS
+    from backend.ai.crimson import CrimsonAgent
+    from backend.ai.difficulty import DifficultyWrapper
+    from backend.ai.observation import example_observation
+    from backend.ai.steel import SteelAgent
+
+    # 1. Verify diverse attack usage (not spamming just 1 attack move)
+    close_obs = example_observation(my_x=300, enemy_x=345, my_health=0.9, enemy_health=0.9)
+    for agent_cls in (CrimsonAgent, SteelAgent):
+        wrapped = DifficultyWrapper(agent_cls(player=2, seed=7), difficulty="MEDIUM")
+        wrapped.rl_learner.reset_round()
+        chosen_attacks = set()
+        for frame in range(1, 200):
+            act, _ = wrapped.choose_action(close_obs)
+            if act in ATTACKS:
+                chosen_attacks.add(act)
+        # Must use at least 4 distinct attack moves according to their probabilities
+        assert len(chosen_attacks) >= 4, f"{agent_cls.__name__} only used {chosen_attacks}"
+
+    # 2. Verify online RL counter-adaptation when human repeats LOW_SWEEP
+    ai = DifficultyWrapper(SteelAgent(player=2, seed=42), difficulty="LOW")
+    ai.rl_learner.recent_enemy_moves.clear()
+    ai.rl_learner.q_table.table.clear()
+
+    obs_before = example_observation(my_x=300, enemy_x=360, my_health=0.90, enemy_health=0.90)
+    _, base_scores = ai.inner.choose_action(obs_before)
+
+    # Human spams LOW_SWEEP and hits the AI repeatedly
+    for i in range(6):
+        obs_pre = example_observation(my_x=300, enemy_x=360, my_health=0.90 - i * 0.05, enemy_health=0.90)
+        ai.rl_learner.record_decision(obs_pre, Action.HEAVY)
+        obs_post = example_observation(my_x=300, enemy_x=360, my_health=0.85 - i * 0.05, enemy_health=0.90)
+        ai.observe(obs_post, Action.HEAVY, Action.LOW_SWEEP)
+
+    spam_move, spam_intensity = ai.rl_learner.detect_spam(obs_before)
+    assert spam_move == Action.LOW_SWEEP
+    assert spam_intensity >= 0.50
+
+    adapted_scores, _ = ai.rl_learner.adjust_scores(base_scores, obs_before, "LOW")
+    # Counter moves against LOW_SWEEP (OVERHEAD, BLOCK_LOW, JUMP_KICK) must be boosted above baseline
+    assert adapted_scores[Action.OVERHEAD] > base_scores[Action.OVERHEAD]
+    assert adapted_scores[Action.BLOCK_LOW] > base_scores[Action.BLOCK_LOW]
+
+
+def test_worthy_coin_economy_and_zero_effort_gate():
+    """Verify doing nothing yields 0 coins and unnormalized HP stats never inflate coins to lakhs."""
+    # 1. Doing nothing and losing -> 0 coins
+    idle_loss = {
+        "winner_side": 2,
+        "rounds_p1": 0,
+        "rounds_p2": 2,
+        "damage_dealt_p1": 0.0,
+        "damage_dealt_p2": 2.0,
+        "hits_landed_p1": 0,
+        "longest_combo_p1": 0,
+        "blocks_p1": 0,
+        "p2_difficulty": "LOW",
+    }
+    res_zero = calculate_match_rewards(idle_loss)
+    assert res_zero["total_coins"] == 0
+
+    # 2. Unnormalized 0..200 HP damage (e.g. 185.0) is normalized and bounded
+    legacy_stats = {
+        "winner_side": 1,
+        "rounds_p1": 2,
+        "rounds_p2": 1,
+        "damage_dealt_p1": 185.0,
+        "damage_dealt_p2": 95.0,
+        "hits_landed_p1": 12,
+        "longest_combo_p1": 3,
+        "blocks_p1": 4,
+        "p2_difficulty": "HIGH",
+    }
+    res_norm = calculate_match_rewards(legacy_stats)
+    assert 50 <= res_norm["total_coins"] <= 350
+

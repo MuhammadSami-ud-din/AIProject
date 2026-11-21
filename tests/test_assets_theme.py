@@ -98,3 +98,90 @@ def test_screen_assets():
     for surf in [intro, intro_blur, victory, defeat, draw]:
         assert isinstance(surf, pygame.Surface)
         assert surf.get_size() == (SCREEN_WIDTH, SCREEN_HEIGHT)
+
+
+@pytest.mark.parametrize("char_name", ["Crimson", "Steel", "Shadow", "Golden"])
+def test_character_pose_assets_and_rendering(char_name):
+    """Verify all 6 character pose sprites exist, map accurately, and render cleanly."""
+    from backend.ai.actions import Action
+    from backend.engine.state import FighterState
+    from frontend.draw_fighter import (
+        draw_fighter,
+        get_fighter_sprite_seamless,
+        resolve_fighter_pose,
+    )
+
+    poses = ("idle", "kick", "punch", "run", "jump", "crouch")
+    pose_map = assets.get_fighter_poses(char_name)
+    assert set(pose_map.keys()) == set(poses)
+
+    for pose in poses:
+        assert assets.has_fighter_pose(char_name, pose) is True
+        surf = assets.get_fighter_sprite(char_name, pose=pose)
+        assert isinstance(surf, pygame.Surface)
+        assert surf.get_width() > 50 and surf.get_height() > 50
+
+        seamless = get_fighter_sprite_seamless(char_name, height=200, is_mirror=False, pose=pose)
+        assert isinstance(seamless, pygame.Surface)
+        assert seamless.get_height() == 200
+
+    # Verify state-to-pose resolution and rendering across all stances/moves
+    canvas = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+
+    # 1. Idle
+    f = FighterState(x=300.0, character_name=char_name)
+    assert resolve_fighter_pose(f) == "idle"
+    draw_fighter(canvas, f, facing_right=True)
+
+    # 2. Run / Walk / Dash
+    for move_act in (Action.FORWARD, Action.BACK, Action.DASH, Action.BACKDASH):
+        f = FighterState(x=300.0, character_name=char_name, current_action=move_act, last_action=move_act)
+        assert resolve_fighter_pose(f) == "run"
+        draw_fighter(canvas, f, facing_right=True)
+
+    # 3. Jump / Airborne
+    f = FighterState(x=300.0, character_name=char_name, in_air=True, jump_frame=8, current_action=Action.JUMP)
+    assert resolve_fighter_pose(f) == "jump"
+    draw_fighter(canvas, f, facing_right=True)
+
+    # 4. Crouch / Low Guard
+    for crouch_act in (Action.CROUCH, Action.BLOCK_LOW):
+        f = FighterState(x=300.0, character_name=char_name, is_crouching=True, current_action=crouch_act)
+        assert resolve_fighter_pose(f) == "crouch"
+        draw_fighter(canvas, f, facing_right=True)
+
+    # 5. Punch attacks
+    for punch_act, atk_name in (
+        (Action.LIGHT, "light"),
+        (Action.HEAVY, "heavy"),
+        (Action.OVERHEAD, "overhead"),
+        (Action.SPECIAL_NEUTRAL, "special_neutral"),
+        (Action.SUPER, "super"),
+    ):
+        f = FighterState(
+            x=300.0,
+            character_name=char_name,
+            attack_phase="active",
+            attack_type=atk_name,
+            current_action=punch_act,
+        )
+        assert resolve_fighter_pose(f) == "punch"
+        draw_fighter(canvas, f, facing_right=True)
+
+    # 6. Kick attacks
+    for kick_act, atk_name in (
+        (Action.LIGHT_KICK, "light_kick"),
+        (Action.HEAVY_KICK, "heavy_kick"),
+        (Action.LOW_SWEEP, "low_sweep"),
+        (Action.CROUCH_KICK, "crouch_kick"),
+        (Action.JUMP_KICK, "jump_kick"),
+    ):
+        f = FighterState(
+            x=300.0,
+            character_name=char_name,
+            attack_phase="active",
+            attack_type=atk_name,
+            current_action=kick_act,
+        )
+        assert resolve_fighter_pose(f) == "kick"
+        draw_fighter(canvas, f, facing_right=False, player_num=2, is_mirror=True)

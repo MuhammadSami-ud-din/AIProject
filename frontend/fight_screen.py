@@ -217,15 +217,7 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
             f2_was_stuck = (state.fighter2.recovery > 0)
 
             if human_player == 1:
-                can_act1 = (
-                    (
-                        state.fighter1.recovery == 0
-                        and state.fighter1.hitstun == 0
-                        and state.fighter1.blockstun == 0
-                        and not state.fighter1.is_knocked_down
-                    )
-                    or state.fighter1.cancel_available
-                )
+                can_act1 = (not state.fighter1.busy and state.fighter1.cooldown <= 0) or state.fighter1.cancel_available
                 action1 = get_human_action(
                     state.fighter2.x,
                     state.fighter1.x,
@@ -248,15 +240,7 @@ def run_fight(surface, clock, agent1, agent2, human_player=None,
             elif human_player == 2:
                 obs1 = observation_for(state, 1)
                 action1, _ = agent1.decide(obs1)
-                can_act2 = (
-                    (
-                        state.fighter2.recovery == 0
-                        and state.fighter2.hitstun == 0
-                        and state.fighter2.blockstun == 0
-                        and not state.fighter2.is_knocked_down
-                    )
-                    or state.fighter2.cancel_available
-                )
+                can_act2 = (not state.fighter2.busy and state.fighter2.cooldown <= 0) or state.fighter2.cancel_available
                 action2 = get_human_action(
                     state.fighter1.x,
                     state.fighter2.x,

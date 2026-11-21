@@ -647,11 +647,14 @@ def _campaign_flow(surface, clock, settings, player_id):
 
         if stats != "quit":
             if stats.get("winner_side") == 1:
+                camp_before = results_db.get_campaign_progress(player_id)
+                already_cleared = b_id in set(camp_before.get("completed_battles", []))
                 p1_rounds = stats.get("rounds_p1", 2)
                 p2_rounds = stats.get("rounds_p2", 0)
                 stars = 3 if p2_rounds == 0 else (2 if p1_rounds > p2_rounds else 1)
                 results_db.save_campaign_battle_result(player_id, b_id, stars)
-                results_db.add_coins(player_id, battle.get("reward_coins", 200))
+                if not already_cleared:
+                    results_db.add_coins(player_id, battle.get("reward_coins", 60))
                 if b_id == 1:
                     results_db.unlock_trophy(player_id, "campaign_start")
                 elif b_id == 8:

@@ -16,7 +16,12 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 import pygame
 
-from backend.data.campaign import CAMPAIGN_BATTLES, format_story_paragraphs, get_battle
+from backend.data.campaign import (
+    CAMPAIGN_BATTLES,
+    format_story_paragraphs,
+    get_battle,
+    get_battle_dialogue,
+)
 from backend.data.progression import (
     ALL_MISSIONS,
     ALL_TROPHIES,
@@ -27,6 +32,7 @@ from backend.data.progression import (
 from backend.data.results_db import results_db
 from frontend.assets import assets
 from frontend.audio import audio
+from frontend.draw_fighter import get_fighter_sprite_seamless
 from frontend.theme import (
     BLACK,
     DARK_GREY,
@@ -75,37 +81,450 @@ from frontend.fantasy_ui import (
 
 
 # ----------------------------------------------------------------------
-# 1. Story Screen (Narrative Typewriter & Opponent Intro)
+# 1. Story Screen (Visual Novel / Comic-Style Face-Off)
 # ----------------------------------------------------------------------
+SPEAKER_THEMES: Dict[str, Dict[str, Tuple[int, int, int]]] = {
+    "Crimson": {
+        "border": (235, 78, 58),
+        "badge_bg": (165, 34, 28),
+        "badge_text": (255, 228, 135),
+        "glow": (255, 95, 45),
+    },
+    "Steel": {
+        "border": (155, 195, 235),
+        "badge_bg": (48, 76, 112),
+        "badge_text": (225, 242, 255),
+        "glow": (95, 175, 255),
+    },
+    "Shadow": {
+        "border": (178, 108, 245),
+        "badge_bg": (78, 38, 126),
+        "badge_text": (165, 250, 255),
+        "glow": (170, 90, 255),
+    },
+    "Golden": {
+        "border": (245, 200, 72),
+        "badge_bg": (138, 98, 24),
+        "badge_text": (255, 246, 200),
+        "glow": (255, 210, 65),
+    },
+}
+
+
+def _wrap_text_lines(text: str, font: pygame.font.Font, max_width: int) -> List[str]:
+    """Word-wrap text string to fit within max_width pixels."""
+    words = text.split(" ")
+    lines: List[str] = []
+    cur = ""
+    for w in words:
+        if not w:
+            continue
+        candidate = f"{cur} {w}".strip()
+        if font.size(candidate)[0] <= max_width:
+            cur = candidate
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _draw_story_fighter_standee(
+    surface: pygame.Surface,
+    char_name: str,
+    cx: int,
+    floor_y: int,
+    facing_right: bool,
+    is_active_speaker: bool,
+    is_narration: bool,
+    is_mirror: bool,
+    frame_counter: int,
+    role_tag: str,
+    pose: str = "idle",
+) -> Tuple[int, int]:
+    """Render one full-body fighter in the face-off layout with speaker spotlight or dimming.
+
+    Returns (head_x, head_y) for aiming comic speech bubble pointer tails.
+    """
+    theme = SPEAKER_THEMES.get(char_name, SPEAKER_THEMES["Golden"])
+    glow_col = theme["glow"]
+    border_col = theme["border"]
+
+    base_h = 286
+    if is_active_speaker:
+        target_h = int(base_h * 1.05)
+    elif is_narration:
+        target_h = base_h
+    else:
+        target_h = int(base_h * 0.94)
+
+    breath = math.sin(frame_counter * 0.06 + (0.0 if facing_right else 1.8)) * 2.5
+    draw_h = max(60, int(target_h + breath))
+
+    raw_sprite = get_fighter_sprite_seamless(
+        char_name,
+        height=draw_h,
+        is_mirror=is_mirror,
+        pose=pose,
+    )
+    oriented = pygame.transform.flip(raw_sprite, not facing_right, False).copy()
+    sw, sh = oriented.get_size()
+
+    # Dim non-speaking fighter during character dialogue so active speaker pops
+    if not is_active_speaker and not is_narration:
+        dim_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        dim_surf.fill((112, 118, 136, 255))
+        oriented.blit(dim_surf, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+
+    # Ground contact shadow
+    shadow_w = max(84, int(sw * 0.95))
+    shadow_h = 24
+    shadow_surf = pygame.Surface((shadow_w + 24, shadow_h + 12), pygame.SRCALPHA)
+    pygame.draw.ellipse(shadow_surf, (0, 0, 0, 155), (8, 4, shadow_w, shadow_h))
+    surface.blit(shadow_surf, (cx - (shadow_w + 24) // 2, floor_y - shadow_h // 2 - 2))
+
+    # Active speaker ground ring & backlight aura
+    if is_active_speaker:
+        pulse = int(140 + 45 * math.sin(frame_counter * 0.12))
+        ring_surf = pygame.Surface((shadow_w + 32, shadow_h + 16), pygame.SRCALPHA)
+        pygame.draw.ellipse(ring_surf, (*glow_col, pulse), (4, 3, shadow_w + 24, shadow_h + 10), 3)
+        pygame.draw.ellipse(ring_surf, (255, 255, 255, pulse // 2), (12, 6, shadow_w + 8, shadow_h + 4), 1)
+        surface.blit(ring_surf, (cx - (shadow_w + 32) // 2, floor_y - (shadow_h + 16) // 2 + 2))
+
+    topleft = (cx - sw // 2, floor_y - sh)
+    surface.blit(oriented, topleft)
+
+    # Engraved fighter nameplate pill below feet
+    plate_w, plate_h = 166, 26
+    plate_rect = pygame.Rect(cx - plate_w // 2, floor_y + 6, plate_w, plate_h)
+    plate_bg = theme["badge_bg"] if is_active_speaker else (20, 22, 34)
+    plate_border = GOLD_BRIGHT if is_active_speaker else (85, 78, 68)
+    pygame.draw.rect(surface, plate_bg, plate_rect, border_radius=6)
+    pygame.draw.rect(surface, plate_border, plate_rect, width=2 if is_active_speaker else 1, border_radius=6)
+
+    font_tag = _get_font(15, bold=True)
+    label_col = theme["badge_text"] if is_active_speaker else TEXT_MUTED
+    tag_surf = font_tag.render(f"{role_tag}: {char_name.upper()}", True, label_col)
+    surface.blit(tag_surf, tag_surf.get_rect(center=plate_rect.center))
+
+    head_dir = 1 if facing_right else -1
+    head_x = cx + head_dir * (sw // 3)
+    head_y = floor_y - int(sh * 0.80)
+    return head_x, head_y
+
+
+def _draw_narration_banner(
+    surface: pygame.Surface,
+    typed_text: str,
+    is_done_typing: bool,
+    frame_counter: int,
+    compact_text: Optional[str] = None,
+) -> None:
+    """Draw the sleek stage-setting narrator banner at the top of the arena."""
+    if compact_text is not None:
+        # Compact stage-setting strip kept visible above comic speech bubbles
+        strip_rect = pygame.Rect(226, 88, SCREEN_WIDTH - 452, 32)
+        strip_surf = pygame.Surface(strip_rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(strip_surf, (16, 18, 30, 195), strip_surf.get_rect(), border_radius=8)
+        pygame.draw.rect(strip_surf, (140, 106, 63, 210), strip_surf.get_rect(), width=1, border_radius=8)
+        surface.blit(strip_surf, strip_rect.topleft)
+
+        font_strip = _get_font(14)
+        short = compact_text if len(compact_text) <= 72 else compact_text[:69] + "..."
+        s_surf = font_strip.render(short, True, (215, 205, 180))
+        surface.blit(s_surf, s_surf.get_rect(center=strip_rect.center))
+        return
+
+    banner_rect = pygame.Rect(226, 98, SCREEN_WIDTH - 452, 152)
+
+    # Drop shadow
+    shadow_rect = banner_rect.move(0, 6)
+    sh_surf = pygame.Surface(shadow_rect.size, pygame.SRCALPHA)
+    pygame.draw.rect(sh_surf, (0, 0, 0, 150), sh_surf.get_rect(), border_radius=12)
+    surface.blit(sh_surf, shadow_rect.topleft)
+
+    # Translucent dark chronicle card so arena and both fighters remain completely unobstructed
+    card_surf = pygame.Surface(banner_rect.size, pygame.SRCALPHA)
+    pygame.draw.rect(card_surf, (18, 21, 35, 232), card_surf.get_rect(), border_radius=12)
+    surface.blit(card_surf, banner_rect.topleft)
+    pygame.draw.rect(surface, GOLD_TEXT, banner_rect, width=2, border_radius=12)
+    pygame.draw.rect(surface, PANEL_BORDER, banner_rect.inflate(-8, -8), width=1, border_radius=9)
+
+    # Top-left "SCENE NARRATION" header pill
+    tag_rect = pygame.Rect(banner_rect.x + 20, banner_rect.y - 14, 178, 26)
+    pygame.draw.rect(surface, (115, 82, 32), tag_rect, border_radius=6)
+    pygame.draw.rect(surface, GOLD_BRIGHT, tag_rect, width=2, border_radius=6)
+    font_tag = _get_font(14, bold=True)
+    tag_surf = font_tag.render("SCENE NARRATION", True, (255, 245, 205))
+    surface.blit(tag_surf, tag_surf.get_rect(center=tag_rect.center))
+
+    font_body = _get_font(18)
+    lines = _wrap_text_lines(typed_text, font_body, banner_rect.width - 44)
+    y_cur = banner_rect.y + 22
+    for ln in lines[:4]:
+        ln_surf = font_body.render(ln, True, (240, 235, 220))
+        surface.blit(ln_surf, (banner_rect.x + 22, y_cur))
+        y_cur += 25
+
+    if is_done_typing:
+        pulse_y = int(math.sin(frame_counter * 0.16) * 2)
+        font_prompt = _get_font(14, bold=True)
+        p_surf = font_prompt.render("SPACE / ENTER", True, GOLD_BRIGHT)
+        px = banner_rect.right - p_surf.get_width() - 32
+        py = banner_rect.bottom - 24 + pulse_y
+        surface.blit(p_surf, (px, py))
+        tri_x = banner_rect.right - 20
+        tri_y = py + p_surf.get_height() // 2
+        pygame.draw.polygon(surface, GOLD_BRIGHT, [(tri_x - 5, tri_y - 3), (tri_x + 5, tri_y - 3), (tri_x, tri_y + 4)])
+
+
+def _draw_comic_speech_bubble(
+    surface: pygame.Surface,
+    speaker_char: str,
+    speaker_label: str,
+    side: str,
+    typed_text: str,
+    target_head: Tuple[int, int],
+    is_done_typing: bool,
+    frame_counter: int,
+) -> None:
+    """Draw a comic-style speech bubble with a directional pointer tail aimed at the speaker."""
+    theme = SPEAKER_THEMES.get(speaker_char, SPEAKER_THEMES["Golden"])
+    border_col = theme["border"]
+    badge_bg = theme["badge_bg"]
+    badge_text_col = theme["badge_text"]
+
+    bubble_w, bubble_h = 444, 142
+    if side == "left":
+        bubble_rect = pygame.Rect(274, 142, bubble_w, bubble_h)
+        tail_tip = (max(218, target_head[0] + 10), min(255, max(185, target_head[1] + 12)))
+        tail_base_top = (bubble_rect.left + 3, bubble_rect.y + 52)
+        tail_base_bot = (bubble_rect.left + 3, bubble_rect.y + 84)
+        seam_top = (bubble_rect.left, bubble_rect.y + 54)
+        seam_bot = (bubble_rect.left, bubble_rect.y + 82)
+        badge_rect = pygame.Rect(bubble_rect.x + 18, bubble_rect.y - 16, 172, 30)
+    else:
+        bubble_rect = pygame.Rect(SCREEN_WIDTH - 274 - bubble_w, 142, bubble_w, bubble_h)
+        tail_tip = (min(SCREEN_WIDTH - 218, target_head[0] - 10), min(255, max(185, target_head[1] + 12)))
+        tail_base_top = (bubble_rect.right - 3, bubble_rect.y + 52)
+        tail_base_bot = (bubble_rect.right - 3, bubble_rect.y + 84)
+        seam_top = (bubble_rect.right - 1, bubble_rect.y + 54)
+        seam_bot = (bubble_rect.right - 1, bubble_rect.y + 82)
+        badge_rect = pygame.Rect(bubble_rect.right - 190, bubble_rect.y - 16, 172, 30)
+
+    tail_pts = [tail_base_top, tail_tip, tail_base_bot]
+
+    # 1. Soft drop shadow for bubble and pointer tail
+    shadow_offset = (6, 8)
+    shadow_rect = bubble_rect.move(*shadow_offset)
+    shadow_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    pygame.draw.rect(shadow_surf, (0, 0, 0, 155), shadow_rect, border_radius=14)
+    shadow_tail = [(x + shadow_offset[0], y + shadow_offset[1]) for (x, y) in tail_pts]
+    pygame.draw.polygon(shadow_surf, (0, 0, 0, 155), shadow_tail)
+    surface.blit(shadow_surf, (0, 0))
+
+    # 2. Speech bubble body & pointer tail fill
+    bubble_fill = (25, 28, 46)
+    pygame.draw.rect(surface, bubble_fill, bubble_rect, border_radius=14)
+    pygame.draw.polygon(surface, bubble_fill, tail_pts)
+
+    # 3. Crisp 3px character-colored border + seamless tail outline
+    pygame.draw.rect(surface, border_col, bubble_rect, width=3, border_radius=14)
+    pygame.draw.line(surface, bubble_fill, seam_top, seam_bot, 5)
+    pygame.draw.line(surface, border_col, tail_base_top, tail_tip, 3)
+    pygame.draw.line(surface, border_col, tail_tip, tail_base_bot, 3)
+
+    # Subtle inner highlight border
+    pygame.draw.rect(surface, (55, 62, 92), bubble_rect.inflate(-10, -10), width=1, border_radius=10)
+
+    # 4. Color-coded Speaker Nameplate Tab
+    pygame.draw.rect(surface, badge_bg, badge_rect, border_radius=7)
+    pygame.draw.rect(surface, border_col, badge_rect, width=2, border_radius=7)
+    font_badge = _get_font(16, bold=True)
+    b_surf = font_badge.render(speaker_label, True, badge_text_col)
+    surface.blit(b_surf, b_surf.get_rect(center=badge_rect.center))
+    # Small diamond emblem inside speaker tab
+    dia_x = badge_rect.x + 16 if side == "left" else badge_rect.right - 16
+    dia_y = badge_rect.centery
+    pygame.draw.polygon(
+        surface,
+        badge_text_col,
+        [(dia_x, dia_y - 5), (dia_x + 5, dia_y), (dia_x, dia_y + 5), (dia_x - 5, dia_y)],
+    )
+
+    # 5. Wrapped dialogue text inside speech bubble
+    font_quote = _get_font(21, bold=True)
+    display_quote = f'"{typed_text}"' if typed_text else ""
+    lines = _wrap_text_lines(display_quote, font_quote, bubble_rect.width - 44)
+    y_cur = bubble_rect.y + 26
+    for ln in lines[:3]:
+        q_surf = font_quote.render(ln, True, TEXT_WHITE)
+        surface.blit(q_surf, (bubble_rect.x + 22, y_cur))
+        y_cur += 29
+
+    # 6. Continue prompt indicator inside bubble bottom-right
+    if is_done_typing:
+        pulse_y = int(math.sin(frame_counter * 0.16) * 2)
+        font_prompt = _get_font(15, bold=True)
+        p_surf = font_prompt.render("NEXT", True, border_col)
+        px = bubble_rect.right - p_surf.get_width() - 32
+        py = bubble_rect.bottom - 26 + pulse_y
+        surface.blit(p_surf, (px, py))
+        tri_x = bubble_rect.right - 20
+        tri_y = py + p_surf.get_height() // 2
+        pygame.draw.polygon(surface, border_col, [(tri_x - 5, tri_y - 3), (tri_x + 5, tri_y - 3), (tri_x, tri_y + 4)])
+
+
+def render_story_faceoff_frame(
+    surface: pygame.Surface,
+    bg: pygame.Surface,
+    battle: Dict[str, Any],
+    warrior_name: str,
+    dialogue_steps: List[Dict[str, str]],
+    step_index: int,
+    char_index: int,
+    frame_counter: int,
+) -> None:
+    """Render one complete frame of the visual-novel / comic face-off story screen."""
+    # 1. Visible Arena Background with subtle edge vignette
+    surface.blit(bg, (0, 0))
+    stage_tint = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    stage_tint.fill((10, 12, 22, 65))
+    surface.blit(stage_tint, (0, 0))
+
+    # Top and bottom cinematic bars
+    top_bar = pygame.Surface((SCREEN_WIDTH, 80), pygame.SRCALPHA)
+    top_bar.fill((12, 14, 24, 215))
+    surface.blit(top_bar, (0, 0))
+    pygame.draw.line(surface, PANEL_BORDER, (0, 80), (SCREEN_WIDTH, 80), 2)
+
+    bot_bar = pygame.Surface((SCREEN_WIDTH, 44), pygame.SRCALPHA)
+    bot_bar.fill((12, 14, 24, 220))
+    surface.blit(bot_bar, (0, SCREEN_HEIGHT - 44))
+    pygame.draw.line(surface, PANEL_BORDER, (0, SCREEN_HEIGHT - 44), (SCREEN_WIDTH, SCREEN_HEIGHT - 44), 1)
+
+    # 2. Header Title & Matchup Info
+    b_num = battle.get("id", 1)
+    b_title = battle.get("title", "Battle")
+    opp = battle.get("opponent", "Crimson")
+    diff = battle.get("difficulty", "LOW")
+
+    font_title = _get_font(30, bold=True)
+    font_sub = _get_font(17)
+    font_hint = _get_font(17)
+
+    t_surf = font_title.render(f"BATTLE {b_num}: {b_title.upper()}", True, GOLD_TEXT)
+    surface.blit(t_surf, (SCREEN_WIDTH // 2 - t_surf.get_width() // 2, 12))
+
+    sub_text = (
+        f"Challenger: {warrior_name}   vs   Guardian: {opp}   |   "
+        f"Tier: {diff}   |   Dialogue {step_index + 1} / {len(dialogue_steps)}"
+    )
+    s_surf = font_sub.render(sub_text, True, TEXT_MUTED)
+    surface.blit(s_surf, (SCREEN_WIDTH // 2 - s_surf.get_width() // 2, 49))
+
+    # 3. Current Step Resolution
+    step = dialogue_steps[min(step_index, len(dialogue_steps) - 1)]
+    cur_side = step.get("side", "center")
+    is_narration = (step.get("type") == "narration" or cur_side == "center")
+    full_text = step.get("text", "")
+    typed_text = full_text[:char_index]
+    is_done_typing = (char_index >= len(full_text))
+
+    # 4. Split Face-Off Fighters (Left Challenger vs Right Opponent)
+    floor_y = 514
+    left_cx = 175
+    right_cx = SCREEN_WIDTH - 175
+    is_mirror = (warrior_name == opp)
+
+    left_head = _draw_story_fighter_standee(
+        surface,
+        char_name=warrior_name,
+        cx=left_cx,
+        floor_y=floor_y,
+        facing_right=True,
+        is_active_speaker=(cur_side == "left"),
+        is_narration=is_narration,
+        is_mirror=False,
+        frame_counter=frame_counter,
+        role_tag="P1",
+        pose=step.get("pose_left", "idle"),
+    )
+    right_head = _draw_story_fighter_standee(
+        surface,
+        char_name=opp,
+        cx=right_cx,
+        floor_y=floor_y,
+        facing_right=False,
+        is_active_speaker=(cur_side == "right"),
+        is_narration=is_narration,
+        is_mirror=is_mirror,
+        frame_counter=frame_counter,
+        role_tag="FOE",
+        pose=step.get("pose_right", "idle"),
+    )
+
+    # 5. Scene Narration Banner OR Comic Speech Bubble
+    narration_text = dialogue_steps[0].get("text", "") if dialogue_steps else ""
+    if is_narration:
+        _draw_narration_banner(surface, typed_text, is_done_typing, frame_counter)
+    else:
+        _draw_narration_banner(surface, "", True, frame_counter, compact_text=narration_text)
+        speaker_char = warrior_name if cur_side == "left" else opp
+        speaker_label = warrior_name.upper() if cur_side == "left" else opp.upper()
+        target_head = left_head if cur_side == "left" else right_head
+        _draw_comic_speech_bubble(
+            surface,
+            speaker_char=speaker_char,
+            speaker_label=speaker_label,
+            side=cur_side,
+            typed_text=typed_text,
+            target_head=target_head,
+            is_done_typing=is_done_typing,
+            frame_counter=frame_counter,
+        )
+
+    # 6. Sequential Step Progress Dots & Bottom Controls
+    dot_y = SCREEN_HEIGHT - 60
+    total_steps = len(dialogue_steps)
+    dot_spacing = 22
+    start_x = SCREEN_WIDTH // 2 - ((total_steps - 1) * dot_spacing) // 2
+    for idx in range(total_steps):
+        dx = start_x + idx * dot_spacing
+        col = GOLD_BRIGHT if idx == step_index else ((130, 110, 70) if idx < step_index else (55, 60, 80))
+        r = 6 if idx == step_index else 4
+        pygame.draw.circle(surface, col, (dx, dot_y), r)
+        pygame.draw.circle(surface, BLACK, (dx, dot_y), r, 1)
+
+    hint_str = "[SPACE / ENTER] Next Dialogue Bubble   |   [ESC] Skip to Fight"
+    h_surf = font_hint.render(hint_str, True, (160, 200, 240))
+    surface.blit(h_surf, (SCREEN_WIDTH // 2 - h_surf.get_width() // 2, SCREEN_HEIGHT - 32))
+
+
 def story_screen(
     surface: pygame.Surface,
     clock: pygame.time.Clock,
     battle: Dict[str, Any],
     warrior_name: str,
 ) -> bool:
-    """Typewriter narrative screen shown before each campaign battle."""
+    """Visual-novel / comic-style face-off intro screen shown before each campaign battle."""
     audio.play_music("music_menu")
-    paragraphs = format_story_paragraphs(battle, warrior_name)
+    dialogue_steps = get_battle_dialogue(battle, warrior_name)
     arena_name = battle.get("arena", "arena_sky_colosseum")
-    bg = assets.get_arena(arena_name, size=(SCREEN_WIDTH, SCREEN_HEIGHT))
+    bg = assets.get_arena(arena_name, size=(SCREEN_WIDTH, SCREEN_HEIGHT), brightness=0.92, dark_overlay=True)
 
-    font_title = _get_font(36, bold=True)
-    font_sub = _get_font(20)
-    font_body = _get_font(22)
-    font_quote = _get_font(24, bold=True)
-    font_hint = _get_font(18)
-
-    dim_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    dim_overlay.fill((12, 14, 24, 220))
-
-    para_index = 0
+    step_index = 0
     char_index = 0
-    typewriter_speed = 2
+    typewriter_speed = 3
     frame_counter = 0
 
     while True:
         clock.tick(60)
         frame_counter += 1
+
+        cur_text = dialogue_steps[step_index]["text"] if step_index < len(dialogue_steps) else ""
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -115,83 +534,43 @@ def story_screen(
                     audio.play_sfx("menu_back")
                     return True
                 elif event.key in (pygame.K_SPACE, pygame.K_RETURN):
-                    cur_p = paragraphs[para_index] if para_index < len(paragraphs) else ""
-                    if char_index < len(cur_p):
-                        char_index = len(cur_p)
+                    if char_index < len(cur_text):
+                        char_index = len(cur_text)
                     else:
                         audio.play_sfx("menu_select")
-                        para_index += 1
+                        step_index += 1
                         char_index = 0
-                        if para_index >= len(paragraphs):
+                        if step_index >= len(dialogue_steps):
                             return True
+                        cur_text = dialogue_steps[step_index]["text"]
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                cur_p = paragraphs[para_index] if para_index < len(paragraphs) else ""
-                if char_index < len(cur_p):
-                    char_index = len(cur_p)
+                if char_index < len(cur_text):
+                    char_index = len(cur_text)
                 else:
                     audio.play_sfx("menu_select")
-                    para_index += 1
+                    step_index += 1
                     char_index = 0
-                    if para_index >= len(paragraphs):
+                    if step_index >= len(dialogue_steps):
                         return True
-
-        surface.blit(bg, (0, 0))
-        surface.blit(dim_overlay, (0, 0))
-
-        # Header
-        b_num = battle.get("id", 1)
-        b_title = battle.get("title", "Battle")
-        opp = battle.get("opponent", "Crimson")
-        diff = battle.get("difficulty", "LOW")
-
-        t_surf = font_title.render(f"BATTLE {b_num}: {b_title.upper()}", True, GOLD_TEXT)
-        surface.blit(t_surf, (SCREEN_WIDTH // 2 - t_surf.get_width() // 2, 40))
-
-        sub_text = f"Warrior: {warrior_name}   vs   Opponent: {opp}   |   Tier: {diff}"
-        s_surf = font_sub.render(sub_text, True, TEXT_MUTED)
-        surface.blit(s_surf, (SCREEN_WIDTH // 2 - s_surf.get_width() // 2, 85))
-
-        # Obsidian Card
-        card_rect = pygame.Rect(90, 130, SCREEN_WIDTH - 180, 330)
-        pygame.draw.rect(surface, PANEL_DARK, card_rect, border_radius=12)
-        pygame.draw.rect(surface, PANEL_BORDER, card_rect, width=2, border_radius=12)
+                    cur_text = dialogue_steps[step_index]["text"]
 
         # Advance Typewriter
-        if para_index < len(paragraphs):
-            cur_p = paragraphs[para_index]
-            char_index = min(len(cur_p), char_index + typewriter_speed)
-            if char_index < len(cur_p) and frame_counter % 6 == 0:
+        if step_index < len(dialogue_steps):
+            cur_text = dialogue_steps[step_index]["text"]
+            char_index = min(len(cur_text), char_index + typewriter_speed)
+            if char_index < len(cur_text) and frame_counter % 6 == 0:
                 audio.play_sfx("menu_hover")
 
-        y_cursor = card_rect.y + 30
-        for i in range(min(para_index + 1, len(paragraphs))):
-            p_text = paragraphs[i]
-            if i == para_index:
-                p_text = p_text[:char_index]
-            words = p_text.split(" ")
-            line = ""
-            for word in words:
-                test_line = f"{line} {word}".strip()
-                if font_body.size(test_line)[0] < card_rect.width - 60:
-                    line = test_line
-                else:
-                    surface.blit(font_body.render(line, True, TEXT_WHITE), (card_rect.x + 30, y_cursor))
-                    y_cursor += 28
-                    line = word
-            if line:
-                surface.blit(font_body.render(line, True, TEXT_WHITE), (card_rect.x + 30, y_cursor))
-                y_cursor += 36
-
-        # Opponent Quote
-        if para_index >= len(paragraphs) - 1 and char_index >= len(paragraphs[-1]):
-            quote_text = f'"{battle.get("intro_quote", "")}"'
-            q_surf = font_quote.render(quote_text, True, (255, 120, 120))
-            surface.blit(q_surf, (SCREEN_WIDTH // 2 - q_surf.get_width() // 2, card_rect.bottom - 50))
-
-        # Bottom Hint
-        hint_str = "[SPACE / ENTER] Continue   |   [ESC] Skip to Fight"
-        h_surf = font_hint.render(hint_str, True, (160, 200, 240))
-        surface.blit(h_surf, (SCREEN_WIDTH // 2 - h_surf.get_width() // 2, SCREEN_HEIGHT - 45))
+        render_story_faceoff_frame(
+            surface,
+            bg,
+            battle,
+            warrior_name,
+            dialogue_steps,
+            step_index,
+            char_index,
+            frame_counter,
+        )
 
         pygame.display.flip()
 

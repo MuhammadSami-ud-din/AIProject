@@ -1,17 +1,17 @@
 {
   "personality": "Steel",
   "version": 3,
-  "total_steps": 1536,
-  "git_commit": "2daebbc",
+  "total_steps": 384,
+  "git_commit": "c6e324b",
   "seed": 42,
-  "timestamp": 1794818827.4978635,
+  "timestamp": 1795248661.4151437,
   "latest_metrics": {
     "update": 3,
-    "total_steps": 1536,
-    "mean_reward": -0.22395506501197815,
-    "policy_loss": -0.01612985332030803,
-    "value_loss": 4.397827610373497,
-    "entropy": 2.175772998481989,
-    "elapsed_time": 0.9764959812164307
+    "total_steps": 384,
+    "mean_reward": 0.9837109446525574,
+    "policy_loss": -0.007208676543086767,
+    "value_loss": 167.2250633239746,
+    "entropy": 1.2179039865732193,
+    "elapsed_time": 0.2464308738708496
   }
 }

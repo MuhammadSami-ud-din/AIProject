@@ -111,17 +111,88 @@ class AssetManager:
         return placeholder
 
     # ------------------------------------------------------------------
-    # Fighter Full-Body Sprites
+    # Fighter Full-Body Sprites & Action Poses
     # ------------------------------------------------------------------
-    def get_fighter_sprite(self, character_name: str, size: Optional[Tuple[int, int]] = None,
-                           flip_h: bool = False) -> pygame.Surface:
-        """Return full-body fighter sprite, optionally scaled and flipped horizontally."""
+    FIGHTER_POSES = ("idle", "kick", "punch", "run", "jump", "crouch")
+    POSE_ALIASES = {
+        "idle": "idle",
+        "stand": "idle",
+        "default": "idle",
+        "ready": "idle",
+        "kick": "kick",
+        "light_kick": "kick",
+        "heavy_kick": "kick",
+        "low_sweep": "kick",
+        "crouch_kick": "kick",
+        "jump_kick": "kick",
+        "sweep": "kick",
+        "punch": "punch",
+        "jab": "punch",
+        "light": "punch",
+        "heavy": "punch",
+        "heavy_punch": "punch",
+        "overhead": "punch",
+        "crouch_jab": "punch",
+        "jump_punch": "punch",
+        "anti_air": "punch",
+        "special": "punch",
+        "super": "punch",
+        "attack": "punch",
+        "run": "run",
+        "walk": "run",
+        "dash": "run",
+        "backdash": "run",
+        "sprint": "run",
+        "forward": "run",
+        "back": "run",
+        "jump": "jump",
+        "air": "jump",
+        "in_air": "jump",
+        "crouch": "crouch",
+        "duck": "crouch",
+        "block_low": "crouch",
+    }
+
+    def normalize_pose(self, pose: Optional[str]) -> str:
+        """Map any pose/action name to a canonical fighter pose key."""
+        if not pose:
+            return "idle"
+        clean = str(pose).lower().strip()
+        return self.POSE_ALIASES.get(clean, clean)
+
+    def has_fighter_pose(self, character_name: str, pose: str = "idle") -> bool:
+        """Return True if a dedicated sprite asset exists for (character_name, pose)."""
         stem = character_name.lower().strip()
-        cache_key = f"fighter:{stem}:{size[0] if size else 'orig'}x{size[1] if size else 'orig'}:{flip_h}"
+        canon_pose = self.normalize_pose(pose)
+        cache_key = f"has_pose:{stem}:{canon_pose}"
+        if cache_key in self._cache:
+            return bool(self._cache[cache_key])
+
+        if canon_pose == "idle":
+            found = self._find_file(FIGHTERS_DIR, stem) is not None
+        else:
+            found = self._find_file(FIGHTERS_DIR, f"{stem}_{canon_pose}") is not None
+        self._cache[cache_key] = found  # type: ignore[assignment]
+        return found
+
+    def get_fighter_sprite(self, character_name: str, size: Optional[Tuple[int, int]] = None,
+                           flip_h: bool = False, pose: str = "idle") -> pygame.Surface:
+        """Return full-body fighter sprite for the requested pose, optionally scaled and flipped."""
+        stem = character_name.lower().strip()
+        canon_pose = self.normalize_pose(pose)
+        cache_key = (
+            f"fighter:{stem}:{canon_pose}:"
+            f"{size[0] if size else 'orig'}x{size[1] if size else 'orig'}:{flip_h}"
+        )
         if cache_key in self._cache:
             return self._cache[cache_key]
 
-        file_path = self._find_file(FIGHTERS_DIR, stem)
+        file_path = None
+        if canon_pose != "idle":
+            file_path = self._find_file(FIGHTERS_DIR, f"{stem}_{canon_pose}")
+        if file_path is None:
+            file_path = self._find_file(FIGHTERS_DIR, stem)
+
         if file_path:
             try:
                 raw = pygame.image.load(file_path)
@@ -139,6 +210,15 @@ class AssetManager:
                 print(f"[Assets] Warning: Failed to load fighter sprite {file_path}: {e}")
 
         return self.get_portrait(character_name, size or (130, 170), flip_h=flip_h)
+
+    def get_fighter_poses(self, character_name: str,
+                          size: Optional[Tuple[int, int]] = None,
+                          flip_h: bool = False) -> Dict[str, pygame.Surface]:
+        """Return dictionary of all canonical pose surfaces for a character."""
+        return {
+            pose: self.get_fighter_sprite(character_name, size=size, flip_h=flip_h, pose=pose)
+            for pose in self.FIGHTER_POSES
+        }
 
     # ------------------------------------------------------------------
     # Screen Art (Intro, Victory, Defeat)

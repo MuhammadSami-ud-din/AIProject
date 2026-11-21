@@ -136,7 +136,7 @@ def advance_attack(fighter: FighterState, move: MoveData | None) -> None:
             fighter.attack_phase = "recovery"
             fighter.attack_frames_left = move.recovery
             fighter.recovery = move.recovery
-            fighter.cooldown = move.recovery + 2
+            fighter.cooldown = move.recovery
             fighter.counter_stance = False
 
         elif fighter.attack_phase == "recovery":
@@ -206,9 +206,11 @@ def check_hit(attacker: FighterState, defender: FighterState, move: MoveData) ->
     if defender.invulnerable_frames > 0 or defender.is_knocked_down:
         return False
 
-    # Check distance reach
+    # Check distance reach (accounting for defender's physical hurtbox radius)
+    from backend.engine.pushbox import pushbox_half_width
     distance = abs(attacker.x - defender.x)
-    if distance > move.reach:
+    hurtbox_radius = pushbox_half_width(defender)
+    if distance > (move.reach + hurtbox_radius):
         return False
 
     # Throw specifics:

@@ -1,61 +1,61 @@
 {
   "personality": "Steel",
   "seed": 42,
-  "git_commit": "2daebbc",
+  "git_commit": "c6e324b",
   "history": [
     {
       "update": 1,
-      "total_steps": 512,
-      "mean_reward": -0.3143066465854645,
-      "policy_loss": -0.023853368766140193,
-      "value_loss": 11.057788461446762,
-      "entropy": 2.1116897985339165,
-      "elapsed_time": 1.1909852027893066
+      "total_steps": 128,
+      "mean_reward": 0.37671878933906555,
+      "policy_loss": -0.00567111955024302,
+      "value_loss": 84.3794755935669,
+      "entropy": 1.1323585212230682,
+      "elapsed_time": 0.2223339080810547
     },
     {
       "update": 2,
-      "total_steps": 1024,
-      "mean_reward": -0.2289745956659317,
-      "policy_loss": -0.01671821909258142,
-      "value_loss": 5.178350657224655,
-      "entropy": 2.2573822252452374,
-      "elapsed_time": 0.9608638286590576
+      "total_steps": 256,
+      "mean_reward": 0.5250781178474426,
+      "policy_loss": -0.003990414552390575,
+      "value_loss": 232.26363372802734,
+      "entropy": 1.1064652353525162,
+      "elapsed_time": 0.20328521728515625
     },
     {
       "update": 3,
-      "total_steps": 1536,
-      "mean_reward": -0.22395506501197815,
-      "policy_loss": -0.01612985332030803,
-      "value_loss": 4.397827610373497,
-      "entropy": 2.175772998481989,
-      "elapsed_time": 0.9764959812164307
+      "total_steps": 384,
+      "mean_reward": 0.9837109446525574,
+      "policy_loss": -0.007208676543086767,
+      "value_loss": 167.2250633239746,
+      "entropy": 1.2179039865732193,
+      "elapsed_time": 0.2464308738708496
     },
     {
       "update": 4,
-      "total_steps": 2048,
-      "mean_reward": -0.16472654044628143,
-      "policy_loss": -0.02185872074915096,
-      "value_loss": 2.1887487173080444,
-      "entropy": 2.134164422750473,
-      "elapsed_time": 1.0838119983673096
+      "total_steps": 512,
+      "mean_reward": 0.8203905820846558,
+      "policy_loss": -0.012632056372240186,
+      "value_loss": 115.03862953186035,
+      "entropy": 1.2407763600349426,
+      "elapsed_time": 0.3159921169281006
     },
     {
       "update": 5,
-      "total_steps": 2560,
-      "mean_reward": -0.13059569895267487,
-      "policy_loss": -0.01990333729190752,
-      "value_loss": 1.1350861079990864,
-      "entropy": 2.0317511297762394,
-      "elapsed_time": 0.9468398094177246
+      "total_steps": 640,
+      "mean_reward": 1.4114062786102295,
+      "policy_loss": -0.0011350754648447037,
+      "value_loss": 236.6792697906494,
+      "entropy": 1.1670549511909485,
+      "elapsed_time": 0.2515113353729248
     },
     {
       "update": 6,
-      "total_steps": 3072,
-      "mean_reward": -0.08271484076976776,
-      "policy_loss": -0.015248229436110705,
-      "value_loss": 0.31963664293289185,
-      "entropy": 1.8416936956346035,
-      "elapsed_time": 0.8596451282501221
+      "total_steps": 768,
+      "mean_reward": 0.7999999523162842,
+      "policy_loss": -0.008830753155052662,
+      "value_loss": 148.7662754058838,
+      "entropy": 1.2944808155298233,
+      "elapsed_time": 0.28141069412231445
     }
   ]
 }

@@ -51,16 +51,85 @@ MIRROR_TINT_FACTORS = {
     "Golden": (195, 210, 240),    # Silver/platinum
 }
 
-_SPRITE_CACHE: Dict[Tuple[str, int, bool], pygame.Surface] = {}
+# Proportional height multipliers per pose relative to standing height (226 px)
+POSE_HEIGHT_RATIOS: Dict[str, float] = {
+    "idle": 1.00,
+    "kick": 0.93,
+    "punch": 0.92,
+    "run": 0.89,
+    "jump": 0.93,
+    "crouch": 0.72,
+}
+
+# Horizontal center-of-mass compensation (fraction of sprite width along facing direction)
+POSE_X_OFFSET_RATIOS: Dict[str, float] = {
+    "idle": 0.00,
+    "kick": 0.16,
+    "punch": 0.08,
+    "run": 0.02,
+    "jump": 0.00,
+    "crouch": 0.00,
+}
+
+_SPRITE_CACHE: Dict[Tuple[str, int, bool, str], pygame.Surface] = {}
 
 
-def get_fighter_sprite_seamless(name: str, height: int = 226, is_mirror: bool = False) -> pygame.Surface:
-    """Return cleanly cropped, seamlessly scaled character sprite with optional mirror tint."""
-    key = (name, height, is_mirror)
+def resolve_fighter_pose(fighter_state) -> str:
+    """Determine the canonical visual pose key ('idle', 'kick', 'punch', 'run', 'jump', 'crouch') for a fighter."""
+    if fighter_state.is_knocked_down or fighter_state.hitstun > 0:
+        return "idle"
+
+    last_act = fighter_state.last_action
+    cur_act = fighter_state.current_action
+    phase = fighter_state.attack_phase
+    atk_type = (fighter_state.attack_type or "none").lower()
+
+    kick_actions = (
+        Action.LIGHT_KICK,
+        Action.HEAVY_KICK,
+        Action.LOW_SWEEP,
+        Action.CROUCH_KICK,
+        Action.JUMP_KICK,
+    )
+
+    if phase in ("startup", "active", "recovery"):
+        if "kick" in atk_type or "sweep" in atk_type or cur_act in kick_actions or last_act in kick_actions:
+            return "kick"
+        return "punch"
+
+    if fighter_state.in_air or cur_act == Action.JUMP or last_act == Action.JUMP:
+        return "jump"
+
+    if (
+        fighter_state.is_crouching
+        or cur_act in (Action.CROUCH, Action.BLOCK_LOW)
+        or last_act in (Action.CROUCH, Action.BLOCK_LOW)
+    ):
+        return "crouch"
+
+    if cur_act == Action.BLOCK or last_act == Action.BLOCK or fighter_state.blockstun > 0:
+        return "idle"
+
+    move_actions = (Action.FORWARD, Action.BACK, Action.DASH, Action.BACKDASH)
+    if fighter_state.is_dashing or cur_act in move_actions or last_act in move_actions:
+        return "run"
+
+    return "idle"
+
+
+def get_fighter_sprite_seamless(
+    name: str,
+    height: int = 226,
+    is_mirror: bool = False,
+    pose: str = "idle",
+) -> pygame.Surface:
+    """Return cleanly cropped, seamlessly scaled character sprite for the given pose with optional mirror tint."""
+    canon_pose = assets.normalize_pose(pose)
+    key = (name, height, is_mirror, canon_pose)
     if key in _SPRITE_CACHE:
         return _SPRITE_CACHE[key]
 
-    raw = assets.get_fighter_sprite(name)
+    raw = assets.get_fighter_sprite(name, pose=canon_pose)
     if raw is None:
         raw = pygame.Surface((70, height), pygame.SRCALPHA)
 
@@ -171,10 +240,21 @@ def _draw_realistic_fighter(
     anim_frame = getattr(fighter_state, "jump_frame", 0) or int(time.time() * 60) % 3600
 
     base_h = 226
-    sprite = get_fighter_sprite_seamless(name, height=base_h, is_mirror=(player_num == 2 and is_mirror))
+    pose = resolve_fighter_pose(fighter_state)
+    has_dedicated_pose = assets.has_fighter_pose(name, pose)
+    target_h = int(base_h * POSE_HEIGHT_RATIOS.get(pose, 1.0)) if has_dedicated_pose else base_h
+    active_pose = pose if has_dedicated_pose else "idle"
+
+    sprite = get_fighter_sprite_seamless(
+        name,
+        height=target_h,
+        is_mirror=(player_num == 2 and is_mirror),
+        pose=active_pose,
+    )
     flip = not facing_right
     oriented = pygame.transform.flip(sprite, flip, False)
     bw, bh = oriented.get_size()
+    base_shadow_w = SPRITE_BASE_SIZES.get(name, (80, 226))[0]
 
     # 1. Knockdown (prone on floor)
     if fighter_state.is_knocked_down:
@@ -199,7 +279,7 @@ def _draw_realistic_fighter(
         jump_y = math.sin(progress * math.pi) * 135.0
 
     # Realistic ground contact shadow (anchored to arena floor)
-    _draw_shadow(surface, cx, ground_y, jump_y, player_num=player_num, base_w=bw)
+    _draw_shadow(surface, cx, ground_y, jump_y, player_num=player_num, base_w=base_shadow_w)
 
     # Golden Grandmaster compass mandala aura
     if name == "Golden" and not fighter_state.in_air:
@@ -216,7 +296,7 @@ def _draw_realistic_fighter(
     torso_lean = 0.0
     scale_x = 1.0
     scale_y = 1.0
-    lunge_x = 0.0
+    lunge_x = arm_dir * (bw * POSE_X_OFFSET_RATIOS.get(active_pose, 0.0)) if has_dedicated_pose else 0.0
 
     is_kick = False
     is_punch = False
@@ -234,89 +314,143 @@ def _draw_realistic_fighter(
     # B. BLOCK
     elif last_act in (Action.BLOCK, Action.BLOCK_LOW) or cur_act in (Action.BLOCK, Action.BLOCK_LOW) or getattr(fighter_state, "blockstun", 0) > 0:
         is_low = getattr(fighter_state, "is_crouching", False) or last_act == Action.BLOCK_LOW or cur_act == Action.BLOCK_LOW
-        torso_lean = -6.0
-        if is_low:
-            scale_y = 0.75
-            scale_x = 1.08
+        if has_dedicated_pose and is_low:
+            torso_lean = -2.0
+            scale_y = 1.0
+            scale_x = 1.0
         else:
-            scale_y = 0.96
-            scale_x = 1.02
+            torso_lean = -6.0
+            if is_low:
+                scale_y = 0.75
+                scale_x = 1.08
+            else:
+                scale_y = 0.96
+                scale_x = 1.02
 
     # C. ATTACKS (Punches & Kicks)
     elif phase in ("startup", "active", "recovery"):
         is_startup = (phase == "startup")
         is_active = (phase == "active")
 
-        if "kick" in atk_type or "sweep" in atk_type:
+        if pose == "kick" or "kick" in atk_type or "sweep" in atk_type:
             is_kick = True
             is_heavy = "heavy" in atk_type or "sweep" in atk_type
-            if is_startup:
-                torso_lean = 2.0
-                scale_y = 0.98
-            elif is_active:
-                # Martial arts counter-lean with explosive hip thrust!
-                torso_lean = -14.0 if is_heavy else -10.0
-                scale_x = 0.96
-                scale_y = 1.06
-                lunge_x = arm_dir * (22.0 if is_heavy else 14.0)
+            if has_dedicated_pose:
+                if is_startup:
+                    scale_x = 0.96
+                    scale_y = 0.99
+                    lunge_x += arm_dir * 2.0
+                elif is_active:
+                    scale_x = 1.02 if is_heavy else 1.0
+                    scale_y = 1.0
+                    lunge_x += arm_dir * (14.0 if is_heavy else 8.0)
+                else:
+                    scale_x = 0.98
+                    lunge_x += arm_dir * 4.0
             else:
-                torso_lean = -4.0
-                lunge_x = arm_dir * 6.0
+                if is_startup:
+                    torso_lean = 2.0
+                    scale_y = 0.98
+                elif is_active:
+                    torso_lean = -14.0 if is_heavy else -10.0
+                    scale_x = 0.96
+                    scale_y = 1.06
+                    lunge_x = arm_dir * (22.0 if is_heavy else 14.0)
+                else:
+                    torso_lean = -4.0
+                    lunge_x = arm_dir * 6.0
         else:
             is_punch = True
             is_heavy = "heavy" in atk_type or "special" in atk_type or "super" in atk_type
-            if is_startup:
-                torso_lean = -4.0
-                scale_x = 0.98
-            elif is_active:
-                # Driving forward into the punch with full kinetic momentum!
-                torso_lean = 14.0 if is_heavy else 10.0
-                scale_x = 1.08
-                scale_y = 0.96
-                lunge_x = arm_dir * (26.0 if is_heavy else 16.0)
+            if has_dedicated_pose:
+                if is_startup:
+                    scale_x = 0.96
+                    scale_y = 0.99
+                    lunge_x += arm_dir * 2.0
+                elif is_active:
+                    scale_x = 1.03 if is_heavy else 1.0
+                    scale_y = 1.0
+                    lunge_x += arm_dir * (16.0 if is_heavy else 10.0)
+                else:
+                    scale_x = 0.98
+                    lunge_x += arm_dir * 4.0
             else:
-                torso_lean = 4.0
-                lunge_x = arm_dir * 8.0
+                if is_startup:
+                    torso_lean = -4.0
+                    scale_x = 0.98
+                elif is_active:
+                    torso_lean = 14.0 if is_heavy else 10.0
+                    scale_x = 1.08
+                    scale_y = 0.96
+                    lunge_x = arm_dir * (26.0 if is_heavy else 16.0)
+                else:
+                    torso_lean = 4.0
+                    lunge_x = arm_dir * 8.0
 
     # D. CROUCH
     elif fighter_state.is_crouching or cur_act in (Action.CROUCH, Action.BLOCK_LOW):
-        scale_y = 0.74
-        scale_x = 1.08
-        torso_lean = 2.0
+        if has_dedicated_pose:
+            scale_y = 1.0 + breath * 0.008
+            scale_x = 1.0
+            torso_lean = 0.0
+        else:
+            scale_y = 0.74
+            scale_x = 1.08
+            torso_lean = 2.0
 
     # E. DASH / BACKDASH
-    elif last_act == Action.DASH or cur_act == Action.DASH or getattr(fighter_state, "is_dashing", False):
+    elif last_act == Action.DASH or cur_act == Action.DASH or (getattr(fighter_state, "is_dashing", False) and last_act != Action.BACKDASH and cur_act != Action.BACKDASH):
         is_dashing = True
-        torso_lean = 14.0
-        scale_y = 0.94
-        scale_x = 1.05
-        lunge_x = arm_dir * 8.0
+        if has_dedicated_pose:
+            torso_lean = 2.0
+            scale_y = 0.99
+            scale_x = 1.02
+            lunge_x += arm_dir * 6.0
+        else:
+            torso_lean = 14.0
+            scale_y = 0.94
+            scale_x = 1.05
+            lunge_x = arm_dir * 8.0
         if name == "Shadow":
             _draw_shadow_mist(surface, cx, ground_y - 25, arm_dir, anim_frame)
     elif last_act == Action.BACKDASH or cur_act == Action.BACKDASH:
-        torso_lean = -10.0
-        scale_y = 0.96
-        lunge_x = -arm_dir * 6.0
+        if has_dedicated_pose:
+            torso_lean = -4.0
+            scale_y = 0.99
+            lunge_x -= arm_dir * 6.0
+        else:
+            torso_lean = -10.0
+            scale_y = 0.96
+            lunge_x = -arm_dir * 6.0
 
     # F. WALKING STRIDE
     elif last_act in (Action.FORWARD, Action.BACK) or cur_act in (Action.FORWARD, Action.BACK):
         is_fwd = (last_act == Action.FORWARD or cur_act == Action.FORWARD)
         stride_bob = abs(math.sin(anim_frame * 0.38)) * 3.5
-        torso_lean = 6.0 if is_fwd else -4.0
         jump_y += stride_bob
-        scale_x = 1.01
-        scale_y = 0.99
+        if has_dedicated_pose:
+            torso_lean = 0.0 if is_fwd else -3.0
+            scale_x = 1.0
+            scale_y = 1.0
+        else:
+            torso_lean = 6.0 if is_fwd else -4.0
+            scale_x = 1.01
+            scale_y = 0.99
 
     # G. IDLE READY STANCE
     else:
         scale_y = 1.0 + breath * 0.012
         scale_x = 1.0 - breath * 0.006
-        torso_lean = 1.8
+        torso_lean = 0.0 if (has_dedicated_pose and active_pose == "jump") else 1.8
 
     # In midair jump adjustment
     if fighter_state.in_air:
-        torso_lean = 4.0
-        scale_y = 1.04
+        if has_dedicated_pose and active_pose in ("jump", "kick", "punch"):
+            torso_lean = 0.0
+            scale_y = 1.0
+        else:
+            torso_lean = 4.0
+            scale_y = 1.04
 
     # 4. GHOST AFTERIMAGES FOR DASH
     foot_x = int(cx + lunge_x)
@@ -348,14 +482,18 @@ def _draw_realistic_fighter(
             is_heavy = "heavy" in atk_type or "sweep" in atk_type
             is_sweep = "sweep" in atk_type
             reach = 64 if is_heavy else 46
-            strike_x = foot_x + arm_dir * int(bw * 0.55)
-            strike_y = foot_y - int(bh * (0.22 if is_sweep else 0.48))
+            x_mult = 0.42 if has_dedicated_pose else 0.55
+            y_mult = 0.22 if is_sweep else (0.78 if has_dedicated_pose else 0.48)
+            strike_x = foot_x + arm_dir * int(bw * x_mult)
+            strike_y = foot_y - int(bh * y_mult)
             _draw_crescent_slash(surface, strike_x, strike_y, reach, arm_dir, accent_col, is_heavy=is_heavy, is_kick=True)
         elif is_punch:
             is_heavy = "heavy" in atk_type or "special" in atk_type or "super" in atk_type
             reach = 68 if is_heavy else 48
-            strike_x = foot_x + arm_dir * int(bw * 0.50)
-            strike_y = foot_y - int(bh * 0.65)
+            x_mult = 0.42 if has_dedicated_pose else 0.50
+            y_mult = 0.75 if has_dedicated_pose else 0.65
+            strike_x = foot_x + arm_dir * int(bw * x_mult)
+            strike_y = foot_y - int(bh * y_mult)
             _draw_crescent_slash(surface, strike_x, strike_y, reach, arm_dir, accent_col, is_heavy=is_heavy, is_kick=False)
 
     # 8. BLOCK HEXAGONAL ENERGY SHIELD

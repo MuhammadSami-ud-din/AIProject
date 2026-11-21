@@ -14,6 +14,7 @@ from backend.ai.actions import ALL_ACTIONS, ATTACKS, DEFENCE, MOVEMENT, Action
 from backend.ai.base_agent import Agent, DIFFICULTIES
 from backend.ai.choice import pick
 from backend.ai.opponent_model import OpponentModel
+from backend.ai.qlearning import OnlineCombatLearner, get_shared_combat_learner
 
 
 @dataclass(frozen=True)
@@ -304,14 +305,13 @@ class DifficultyWrapper(Agent):
         self._punish_decision_for_window: bool = False
         self.last_reaction_frames: Optional[int] = None
 
-        # Opponent model setup per table ("off", "counts", "bayes", "live")
+        # Opponent model & Live Online Reinforcement Learner
         self.use_search: bool = True
-        self.use_opponent_model: bool = (self.base_profile.opponent_model != "off")
+        self.use_opponent_model: bool = True
         self.use_learned_policy: bool = True
-        self.opp_model: Optional[OpponentModel] = (
-            OpponentModel() if self.base_profile.opponent_model in ("bayes", "live") else None
-        )
+        self.opp_model: Optional[OpponentModel] = OpponentModel()
         self.enemy_counts: Dict[Action, int] = {a: 0 for a in ALL_ACTIONS}
+        self.rl_learner: OnlineCombatLearner = get_shared_combat_learner(self.inner.name)
 
         # Dynamic Difficulty Adjustment (DDA, settings option for HIGH and HELL)
         self.adaptive_difficulty: bool = False
@@ -372,7 +372,7 @@ class DifficultyWrapper(Agent):
         _LEARNED_MODEL_CACHE[char_name] = (self._learned_model, self._policy_agent)
 
     def reset(self) -> None:
-        """Reset for a new round."""
+        """Reset for a new round (preserves learned Q-table and opponent habit counts)."""
         super().reset()
         self.inner.reset()
         self.obs_buffer.clear()
@@ -391,17 +391,20 @@ class DifficultyWrapper(Agent):
         self._block_hold_frames = 0
         self._seen_enemy_stuck = False
         self._punish_decision_for_window = False
-        self.enemy_counts = {a: 0 for a in ALL_ACTIONS}
         if self.opp_model is not None:
             self.opp_model.reset()
+        self.rl_learner.reset_round()
 
     def observe(self, state, my_action: Action, enemy_action: Action) -> None:
-        """Called after every frame."""
+        """Called after every frame: updates inner agent, opponent model, and live Q-learner."""
         self.inner.observe(state, my_action, enemy_action)
+        self.rl_learner.observe(state, my_action, enemy_action)
         if self.use_opponent_model:
-            self.enemy_counts[enemy_action] = self.enemy_counts.get(enemy_action, 0) + 1
+            eff_enemy = enemy_action if enemy_action != Action.IDLE else state.enemy_last_action
+            if eff_enemy != Action.IDLE:
+                self.enemy_counts[eff_enemy] = self.enemy_counts.get(eff_enemy, 0) + 1
             if self.opp_model is not None:
-                self.opp_model.observe(state, my_action, enemy_action)
+                self.opp_model.observe(state, eff_enemy, my_action)
 
     def _apply_adrenaline(self, my_health: float) -> DifficultyProfile:
         """Update current profile and live attributes based on current health."""
@@ -417,17 +420,25 @@ class DifficultyWrapper(Agent):
         return prof
 
     def choose_action(self, obs):
-        """Choose an action applying reaction delay, cadence, block/punish/combo/whiff gates, and Adrenaline."""
+        """Choose an action applying reaction delay, cadence, RL adaptation, and move diversity."""
         with self.stage("difficulty"):
             prof = self._apply_adrenaline(obs.my_health)
 
+            # Check if the opponent is repeating a move/pattern so the AI adapts its focus
+            spam_move, spam_intensity = self.rl_learner.detect_spam(obs)
+            eff_block_chance = min(0.95, prof.block_chance + 0.50 * spam_intensity)
+            eff_punish_chance = min(0.96, prof.punish_chance + 0.55 * spam_intensity)
+            eff_anti_air_chance = min(0.96, prof.anti_air_chance + 0.55 * spam_intensity)
+            eff_hesitation = max(0.0, prof.hesitation * (1.0 - 0.75 * spam_intensity))
+            eff_delay = max(2, int(prof.reaction_delay * (1.0 - 0.45 * spam_intensity)))
+
             # 1. Push current observation into reaction buffer and fetch delayed observation
             if len(self.obs_buffer) == 0:
-                for _ in range(prof.reaction_delay):
+                for _ in range(eff_delay):
                     self.obs_buffer.append(obs)
             self.obs_buffer.append(obs)
-            if len(self.obs_buffer) > prof.reaction_delay:
-                delayed_obs = self.obs_buffer[-prof.reaction_delay - 1]
+            if len(self.obs_buffer) > eff_delay:
+                delayed_obs = self.obs_buffer[-eff_delay - 1]
             else:
                 delayed_obs = self.obs_buffer[0]
 
@@ -436,24 +447,26 @@ class DifficultyWrapper(Agent):
 
             # 2. Detect newly seen enemy attack in the delayed observation
             enemy_attack_seen_now = (
-                delayed_obs.enemy_is_attacking and delayed_obs.distance <= 165
+                (delayed_obs.enemy_is_attacking or obs.enemy_is_attacking) and obs.distance <= 165
             )
             just_saw_attack = enemy_attack_seen_now and not self._seen_enemy_attacking
             self._seen_enemy_attacking = enemy_attack_seen_now
 
             is_low_threat = (
                 delayed_obs.enemy_is_crouching
+                or obs.enemy_is_crouching
                 or delayed_obs.enemy_last_action in (
                     Action.LOW_SWEEP, Action.CROUCH_JAB, Action.CROUCH_KICK
                 )
+                or spam_move in (Action.LOW_SWEEP, Action.CROUCH_JAB, Action.CROUCH_KICK)
             )
 
             if just_saw_attack:
-                self.last_reaction_frames = max(1, prof.reaction_delay)
-                # Roll block_chance at the exact moment the delayed observation sees the attack!
-                self._block_decision_for_attack = (self.rng.random() < prof.block_chance)
+                self.last_reaction_frames = max(1, eff_delay)
+                # Roll block_chance at the exact moment the observation sees the attack!
+                self._block_decision_for_attack = (self.rng.random() < eff_block_chance)
                 if self._block_decision_for_attack:
-                    self._block_hold_frames = 14
+                    self._block_hold_frames = 12
 
             if self._block_hold_frames > 0:
                 self._block_hold_frames -= 1
@@ -461,22 +474,28 @@ class DifficultyWrapper(Agent):
                     blk = Action.BLOCK_LOW if is_low_threat else Action.BLOCK
                     self._held_action = blk
                     self._last_scores = {blk: 10.0, Action.IDLE: 1.0}
+                    self.rl_learner.record_decision(obs, blk)
                     return blk, self._last_scores
 
             # 3. Detect newly seen enemy recovery (punish opportunity)
-            enemy_stuck_now = (delayed_obs.enemy_is_stuck or obs.enemy_is_stuck) and obs.distance <= 115
+            enemy_stuck_now = (delayed_obs.enemy_is_stuck or obs.enemy_is_stuck) and obs.distance <= 125
             if enemy_stuck_now and not self._seen_enemy_stuck:
-                self._punish_decision_for_window = (self.rng.random() < prof.punish_chance)
+                self._punish_decision_for_window = (self.rng.random() < eff_punish_chance)
             self._seen_enemy_stuck = enemy_stuck_now
 
-            # 4. Decision Cadence: only re-decide every N frames (unless reacting to a newly seen attack)
+            just_recovered = obs.can_attack and not getattr(self, "_prev_can_attack", True)
+            self._prev_can_attack = obs.can_attack
+
+            # 4. Decision Cadence: only re-decide every N frames (unless reacting to a newly seen attack, recovery, or punish)
+            eff_cadence = max(2, int(prof.decides_every_n_frames * (1.0 - 0.35 * spam_intensity)))
             is_decision_tick = (
                 self._frame_counter == 1
-                or (self._frame_counter % prof.decides_every_n_frames == 0)
+                or (self._frame_counter % eff_cadence == 0)
                 or just_saw_attack
+                or enemy_stuck_now
+                or just_recovered
             )
             if not is_decision_tick:
-                # Between decision ticks: hold movement/crouch, or IDLE if an attack was already triggered
                 if self._held_action in (Action.FORWARD, Action.BACK, Action.DASH, Action.BACKDASH, Action.CROUCH):
                     return self._held_action, self._last_scores
                 return Action.IDLE, self._last_scores
@@ -498,43 +517,48 @@ class DifficultyWrapper(Agent):
                     self._last_scores = {shield_act: 10.0}
                     return shield_act, self._last_scores
 
-            # 5. Hesitation check: stays idle for a beat with probability `prof.hesitation` when in combat range
-            if not just_saw_attack and obs.distance <= 140 and self.rng.random() < prof.hesitation:
+            # 5. Hesitation check
+            if not just_saw_attack and not enemy_stuck_now and obs.distance <= 140 and self.rng.random() < eff_hesitation:
                 self._held_action = Action.IDLE
                 self._last_scores = {Action.IDLE: 5.0}
                 return Action.IDLE, self._last_scores
 
-            # 6. Ask inner personality agent for base move scores on delayed observation
+            # 6. Ask inner personality agent for base move scores
             _, raw_scores = self.inner.choose_action(delayed_obs)
             if not raw_scores:
                 return Action.IDLE, {Action.IDLE: 1.0}
             scores = dict(raw_scores)
 
-            # 7. Apply Block Gate: only block when an attack was seen AND block roll succeeded
+            # 7. Apply Block Gate
             if enemy_attack_seen_now and self._block_decision_for_attack and not obs.my_in_air:
-                blk = Action.BLOCK_LOW if delayed_obs.enemy_is_crouching else Action.BLOCK
+                blk = Action.BLOCK_LOW if is_low_threat else Action.BLOCK
                 scores[blk] = max(scores.values()) + 5.0
             else:
-                # Do not pre-emptively hold block when no attack has been seen or block roll failed
                 scores[Action.BLOCK] = 0.05
                 scores[Action.BLOCK_LOW] = 0.05
 
             # 8. Apply Anti-Air Gate against jumping opponents
-            if delayed_obs.enemy_in_air and delayed_obs.distance <= 110 and obs.can_attack and not obs.my_in_air:
-                if self.rng.random() < prof.anti_air_chance:
-                    scores[Action.ANTI_AIR] = max(scores.values()) + 4.0
+            if (delayed_obs.enemy_in_air or obs.enemy_in_air) and obs.distance <= 110 and obs.can_attack and not obs.my_in_air:
+                if self.rng.random() < eff_anti_air_chance:
+                    top_s = max(scores.values())
+                    scores[Action.ANTI_AIR] = top_s + 3.5
+                    if Action.SPECIAL_NEUTRAL in scores and self.inner.name == "Crimson":
+                        scores[Action.SPECIAL_NEUTRAL] = top_s + 3.4
                 else:
                     scores[Action.ANTI_AIR] = 0.05
 
-            # 9. Apply Punish Gate when enemy is stuck
+            # 9. Apply Punish Gate when enemy is stuck — boost ALL viable in-range attacks proportionally!
             if enemy_stuck_now and obs.can_attack and not obs.my_in_air:
                 if self._punish_decision_for_window:
-                    if obs.distance <= 85 and Action.HEAVY in scores:
-                        scores[Action.HEAVY] = max(scores.values()) + 4.5
-                    elif Action.LIGHT in scores:
-                        scores[Action.LIGHT] = max(scores.values()) + 4.0
+                    for atk in (
+                        Action.HEAVY, Action.HEAVY_KICK, Action.LOW_SWEEP, Action.OVERHEAD,
+                        Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB, Action.CROUCH_KICK,
+                        Action.SPECIAL_FORWARD, Action.SPECIAL_DOWN, Action.SPECIAL_NEUTRAL,
+                        Action.SUPER,
+                    ):
+                        if atk in scores and scores[atk] >= 5.0:
+                            scores[atk] = scores[atk] * 1.28 + 1.8
                 else:
-                    # Missed punish opportunity: suppress attacks this tick
                     for atk in ATTACKS:
                         if atk in scores:
                             scores[atk] *= 0.08
@@ -542,20 +566,19 @@ class DifficultyWrapper(Agent):
             # 10. Apply Combo Completion Gate when continuing a combo
             if obs.my_combo_count >= 1:
                 if self.rng.random() > prof.combo_completion:
-                    # Drop the combo
                     for atk in ATTACKS:
                         if atk in scores:
                             scores[atk] = 0.05
                     scores[Action.IDLE] = 5.0
 
             # 11. Apply Whiff Gate when out of range
-            out_of_melee_range = (not obs.i_can_hit) and (obs.distance > 95)
+            out_of_melee_range = (not obs.i_can_hit) and (obs.distance > 125)
             if out_of_melee_range and obs.can_attack and not obs.my_in_air:
                 if self.rng.random() < prof.whiff_rate:
-                    # Deliberate out-of-range whiff (common on LOW, rare on HELL)
-                    scores[Action.LIGHT] = max(scores.values()) + 3.0
+                    whiff_pool = [a for a in (Action.LIGHT, Action.LIGHT_KICK, Action.HEAVY_KICK, Action.CROUCH_KICK) if a in scores]
+                    if whiff_pool:
+                        scores[self.rng.choice(whiff_pool)] = max(scores.values()) + 3.0
                 else:
-                    # Suppress out-of-range melee normals so sharp AI closes distance instead of whiffing
                     for melee_act in (
                         Action.LIGHT, Action.HEAVY, Action.LIGHT_KICK, Action.HEAVY_KICK,
                         Action.CROUCH_JAB, Action.CROUCH_KICK, Action.LOW_SWEEP,
@@ -564,32 +587,47 @@ class DifficultyWrapper(Agent):
                         if melee_act in scores:
                             scores[melee_act] = 0.05
 
-            # 12. Opponent Model adjustments ("counts", "bayes", "live")
-            if self.use_opponent_model and prof.opponent_model != "off":
+            # 12. Opponent Model adjustments
+            if self.use_opponent_model:
                 scores = self._apply_opponent_model(scores, delayed_obs, prof)
 
-            # 13. Blend in learned model suggestions (HIGH and HELL)
+            # 13. Blend in offline learned model suggestions (HIGH and HELL)
             if self.use_learned_policy and self.difficulty in ("HIGH", "HELL") and self._learned_model is not None:
                 scores = self._blend_learned_scores(scores, delayed_obs)
 
-            # 14. Scale softmax variety by difficulty so HIGH/HELL play sharply while preserving personality
-            base_variety = self.inner.personality.variety if self.inner.personality else 0.1
-            variety_scale = {"LOW": 1.0, "MEDIUM": 0.65, "HIGH": 0.25, "HELL": 0.05}[self.difficulty]
-            effective_variety = base_variety * variety_scale
+            # 14. Apply Online Reinforcement Learning (Q-values + Anti-Spam Counters + Move Diversity Decay)
+            scores, _ = self.rl_learner.adjust_scores(scores, delayed_obs, self.difficulty)
 
+            # 15. Probabilistic Move Selection Across All Viable Moves According to Their Chances
+            base_variety = self.inner.personality.variety if self.inner.personality else 0.25
+            variety_scale = {"LOW": 1.15, "MEDIUM": 1.00, "HIGH": 0.85, "HELL": 0.75}[self.difficulty]
+            effective_variety = min(0.65, max(0.24, base_variety * variety_scale))
+
+            # Filter candidate pool to viable high-scoring moves so variety samples across all good attacks
+            # without accidentally picking 0.05-score disabled moves
+            max_s = max(scores.values()) if scores else 1.0
+            viable_threshold = max_s * 0.58
+            viable_scores = {
+                a: s for a, s in scores.items() if s >= viable_threshold and s > 0.1
+            }
+            if len(viable_scores) < 2:
+                viable_scores = scores
+
+            eff_mistake = max(0.0, self.mistake_chance * (1.0 - 0.65 * spam_intensity))
             chosen = pick(
-                scores,
+                viable_scores,
                 self.rng,
                 variety=effective_variety,
-                mistake_chance=self.mistake_chance,
+                mistake_chance=eff_mistake,
             )
 
-            # Ensure a mistake on LOW/MEDIUM actually picks a weaker move when mistake triggers
-            if self.rng.random() < self.mistake_chance:
+            # When a mistake triggers on LOW/MEDIUM (and player isn't spamming), pick a suboptimal move
+            if self.rng.random() < eff_mistake:
                 ordered = sorted(scores, key=lambda a: scores[a], reverse=True)
                 if len(ordered) >= 6:
                     chosen = self.rng.choice(ordered[2:6])
 
+            self.rl_learner.record_decision(obs, chosen)
             self._held_action = chosen
             self._last_scores = scores
             return chosen, scores
@@ -597,33 +635,54 @@ class DifficultyWrapper(Agent):
     def _apply_opponent_model(
         self, scores: Dict[Action, float], obs, prof: DifficultyProfile
     ) -> Dict[Action, float]:
-        """Adjust move scores based on the difficulty's opponent model tier."""
+        """Adjust move scores based on the opponent model predictions."""
         adjusted = dict(scores)
         predicted_action: Optional[Action] = None
 
-        if prof.opponent_model == "counts":
-            total = sum(self.enemy_counts.values())
-            if total >= 10:
-                predicted_action = max(self.enemy_counts, key=lambda a: self.enemy_counts[a])
-        elif prof.opponent_model in ("bayes", "live") and self.opp_model is not None:
-            predicted_action = self.opp_model.predict(obs)
+        non_idle_counts = {a: c for a, c in self.enemy_counts.items() if a != Action.IDLE and c > 0}
+        if prof.opponent_model in ("off", "counts") or self.opp_model is None:
+            total = sum(non_idle_counts.values())
+            if total >= 4:
+                predicted_action = max(non_idle_counts, key=lambda a: non_idle_counts[a])
+        else:
+            probs = self.opp_model.predict(obs)
+            if isinstance(probs, dict) and probs:
+                non_idle_probs = {a: p for a, p in probs.items() if a != Action.IDLE}
+                predicted_action = max(non_idle_probs, key=lambda a: non_idle_probs[a]) if non_idle_probs else max(probs, key=lambda a: probs[a])
+            elif isinstance(probs, Action):
+                predicted_action = probs
 
         if predicted_action is None:
             return adjusted
 
-        mult = 2.5 if prof.opponent_model == "live" else 1.5
+        mult = 2.6 if prof.opponent_model == "live" else 1.8
         if predicted_action in DEFENCE:
-            # Enemy likes to block -> counter with throw, low sweep, or overhead
-            if obs.distance <= 45 and Action.THROW in adjusted:
-                adjusted[Action.THROW] += mult
-            if Action.LOW_SWEEP in adjusted and obs.distance <= 85:
-                adjusted[Action.LOW_SWEEP] += mult * 0.8
-            if Action.OVERHEAD in adjusted and obs.distance <= 85:
-                adjusted[Action.OVERHEAD] += mult * 0.8
+            # Enemy likes to block -> counter with throw, low sweep, crouch kick, or overhead
+            if obs.distance <= 50 and Action.THROW in adjusted:
+                adjusted[Action.THROW] += mult * 1.2
+            if Action.LOW_SWEEP in adjusted and obs.distance <= 88:
+                adjusted[Action.LOW_SWEEP] += mult * 0.95
+            if Action.CROUCH_KICK in adjusted and obs.distance <= 85:
+                adjusted[Action.CROUCH_KICK] += mult * 0.90
+            if Action.OVERHEAD in adjusted and obs.distance <= 88:
+                adjusted[Action.OVERHEAD] += mult * 0.95
+        elif predicted_action in (Action.LOW_SWEEP, Action.CROUCH_KICK, Action.CROUCH_JAB, Action.CROUCH):
+            # Enemy likes low attacks -> counter with overhead, jump attack, or low block
+            if Action.OVERHEAD in adjusted and obs.distance <= 88:
+                adjusted[Action.OVERHEAD] += mult * 1.15
+            if Action.JUMP_KICK in adjusted:
+                adjusted[Action.JUMP_KICK] += mult
+            if Action.BLOCK_LOW in adjusted and obs.distance <= 115:
+                adjusted[Action.BLOCK_LOW] += mult * 0.9
+        elif predicted_action in (Action.JUMP, Action.JUMP_KICK, Action.JUMP_PUNCH):
+            # Enemy likes jumping -> counter with anti-air
+            if Action.ANTI_AIR in adjusted and obs.distance <= 110:
+                adjusted[Action.ANTI_AIR] += mult * 1.3
         elif predicted_action in ATTACKS and obs.distance <= 110:
-            # Enemy about to attack -> boost fast counter-poke or block
-            if Action.LIGHT in adjusted and obs.i_can_hit:
-                adjusted[Action.LIGHT] += mult
+            # Enemy about to attack -> boost fast counter-pokes, low sweep, or counter specials
+            for fast_counter in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB, Action.LOW_SWEEP, Action.SPECIAL_DOWN, Action.SPECIAL_BACK):
+                if fast_counter in adjusted and obs.i_can_hit:
+                    adjusted[fast_counter] += mult * 0.85
         elif predicted_action in (Action.BACK, Action.BACKDASH):
             # Enemy retreating -> chase down with dash or forward
             if Action.DASH in adjusted:

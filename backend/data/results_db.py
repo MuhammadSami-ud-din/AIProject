@@ -149,6 +149,10 @@ class ResultsDB:
                     conn.execute("ALTER TABLE matches ADD COLUMN shield_preset TEXT DEFAULT 'Normal';")
                 if "shield_balance_json" not in cols:
                     conn.execute("ALTER TABLE matches ADD COLUMN shield_balance_json TEXT DEFAULT '{}';")
+                # Sanitize any legacy test-polluted coin balances (> 25,000 coins)
+                conn.execute(
+                    "UPDATE progress SET coins = 0, total_coins_spent = 0 WHERE coins > 25000;"
+                )
 
     # ------------------------------------------------------------------
     # Player Management

@@ -46,13 +46,40 @@ class Agent:
         self.decision_times = deque(maxlen=HISTORY_FRAMES)  # recent times, for charts
         self.last_breakdown = {}            # time per part of the last decision
         self._first_decision_logged = False
+        self._rl_learner = None
+
+    def _get_rl_learner(self):
+        if self._rl_learner is None:
+            from backend.ai.qlearning import OnlineCombatLearner
+            self._rl_learner = OnlineCombatLearner()
+        return self._rl_learner
 
     def reset(self):
         """Called at the start of each round. Forget old notes."""
         self.last_scores = {}
+        if self._rl_learner is not None:
+            self._rl_learner.reset_round()
 
     def observe(self, state, my_action, enemy_action):
         """Called after every frame. Learn from what just happened."""
+        if state is not None and hasattr(state, "distance"):
+            self._get_rl_learner().observe(state, my_action, enemy_action)
+
+    def _select_action_with_rl_and_diversity(self, scores, obs, variety=0.25):
+        """Apply live RL adjustments, anti-repetition diversity, and probabilistic choice across viable moves."""
+        from backend.ai.choice import pick
+        learner = self._get_rl_learner()
+        adjusted, _ = learner.adjust_scores(scores, obs, self.difficulty)
+
+        eff_variety = min(0.65, max(0.26, float(variety)))
+        max_s = max(adjusted.values()) if adjusted else 1.0
+        viable = {a: s for a, s in adjusted.items() if s >= max_s * 0.58 and s > 0.1}
+        if len(viable) < 2:
+            viable = adjusted
+
+        chosen = pick(viable, self.rng, variety=eff_variety)
+        learner.record_decision(obs, chosen)
+        return chosen, adjusted
 
     def choose_action(self, state):
         """Each fighter writes its own version. Return (action, scores)."""
