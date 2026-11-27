@@ -13,7 +13,6 @@ from gymnasium import spaces
 import numpy as np
 
 from backend.ai.actions import ALL_ACTIONS, Action
-from backend.ai.adapter import observation_for
 from backend.ai.base_agent import Agent
 from backend.ai.random_agent import RandomAgent
 from backend.engine.combat import can_act, can_cancel_into, get_move
@@ -21,10 +20,34 @@ from backend.engine.state import FightState, FighterState
 from backend.engine.step import make_initial_state, step
 from backend.learning.config import (
     ACTION_DIM,
+    ACTION_EXECUTION_FRAMES,
     DEFAULT_SEED,
     MAX_ROUND_FRAMES,
     OBS_DIM,
 )
+from backend.learning.features import full_observation_for, policy_vector
+
+# Actions held for the whole macro-step; every other action is pressed on the
+# first frame only (then IDLE) and resolves through the engine's own timers.
+SUSTAINED_ACTIONS = (
+    Action.FORWARD, Action.BACK, Action.DASH,
+    Action.CROUCH, Action.BLOCK, Action.BLOCK_LOW,
+)
+MAX_MACRO_FRAMES = 30   # safety bound for one macro-step
+
+
+def macro_frame_action(chosen: Action, frame_in_macro: int) -> Action:
+    """Engine input for frame ``frame_in_macro`` of a macro-step (shared with PolicyAgent)."""
+    if chosen in SUSTAINED_ACTIONS or frame_in_macro == 0:
+        return chosen
+    return Action.IDLE
+
+
+def macro_step_done(frames_advanced: int, fighter: FighterState) -> bool:
+    """True when the learner gets its next decision (shared with PolicyAgent)."""
+    return frames_advanced >= MAX_MACRO_FRAMES or (
+        frames_advanced >= ACTION_EXECUTION_FRAMES and can_act(fighter)
+    )
 
 
 def get_action_mask(fighter: FighterState, enemy: FighterState, player: int = 1) -> np.ndarray:
@@ -163,6 +186,12 @@ class ArenaEnv(gym.Env):
         self.prev_state: Optional[FightState] = None
         self.current_step = 0
 
+    def set_opponent(self, agent: Agent, character: Optional[str] = None) -> None:
+        """Swap the opponent (used by league sampling between episodes)."""
+        self.opponent_agent = agent
+        if character:
+            self.opponent_character = character
+
     def reset(
         self,
         seed: Optional[int] = None,
@@ -220,33 +249,29 @@ class ArenaEnv(gym.Env):
 
         # Step frame by frame until learner can act again, or round ends
         frames_advanced = 0
-        max_frame_skip = 30  # Safety upper bound for one macro step
+        observe_frame = getattr(self.reward_calculator, "observe_frame", None)
 
-        while frames_advanced < max_frame_skip:
+        obs_opponent = full_observation_for(self.state, player=2)
+        while True:
             # Query opponent action
-            obs_opponent = observation_for(self.state, player=2)
             opp_action = self.opponent_agent.choose_action(obs_opponent)
             if isinstance(opp_action, tuple):
                 opp_action = opp_action[0]
 
-            # Sustained movement/defense actions hold across the macro-step;
-            # discrete attacks/jumps initiate on the first frame and resolve
-            if chosen_action in (
-                Action.FORWARD, Action.BACK, Action.DASH,
-                Action.CROUCH, Action.BLOCK, Action.BLOCK_LOW,
-            ):
-                f1_action = chosen_action
-            else:
-                f1_action = chosen_action if frames_advanced == 0 else Action.IDLE
-
+            f1_action = macro_frame_action(chosen_action, frames_advanced)
+            before = self.state
             self.state = step(self.state, f1_action, opp_action)
             frames_advanced += 1
+            if observe_frame is not None:
+                observe_frame(before, self.state, 1)
+            obs_opponent = full_observation_for(self.state, player=2)
+            if hasattr(self.opponent_agent, "observe"):
+                self.opponent_agent.observe(obs_opponent, opp_action, f1_action)
 
             if self.state.round_over or self.state.match_over or self.state.round_frames_left <= 0:
                 break
 
-            # If fighter is ready to act again and finished the initial commitment
-            if frames_advanced >= 6 and can_act(self.state.fighter1):
+            if macro_step_done(frames_advanced, self.state.fighter1):
                 break
 
         self.current_step += 1
@@ -270,7 +295,9 @@ class ArenaEnv(gym.Env):
             reward_breakdown = {"base": reward}
 
         terminated = bool(self.state.round_over or self.state.match_over)
-        truncated = bool(self.state.frame >= MAX_ROUND_FRAMES)
+        # Truncation (time limit without a decided round) is NOT termination:
+        # PPO bootstraps the value of the final observation in that case.
+        truncated = bool(not terminated and self.state.frame >= MAX_ROUND_FRAMES)
 
         obs_vector = self._get_obs()
         next_mask = get_action_mask(self.state.fighter1, self.state.fighter2, player=1)
@@ -287,10 +314,10 @@ class ArenaEnv(gym.Env):
 
         return obs_vector, float(reward), terminated, truncated, info
 
+    def current_observation(self):
+        """The learner's full Observation (used to query FSM experts for BC)."""
+        return full_observation_for(self.state, player=1)
+
     def _get_obs(self) -> np.ndarray:
-        """Convert engine state into normalized float32 observation vector."""
-        obs = observation_for(self.state, player=1)
-        feat_dict = obs.features()
-        from backend.ai.observation import FEATURE_NAMES
-        feat_vec = [float(feat_dict[k]) for k in FEATURE_NAMES]
-        return np.array(feat_vec, dtype=np.float32)
+        """Convert engine state into the policy observation vector (POLICY_OBS_DIM)."""
+        return policy_vector(full_observation_for(self.state, player=1))

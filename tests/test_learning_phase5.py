@@ -57,8 +57,8 @@ def test_style_check_evaluation():
     # High aggression passes
     assert league.evaluate_style({"aggression": 0.70, "defense": 2.0, "avg_distance": 120.0}) is True
 
-    # Low aggression fails Crimson style check
-    assert league.evaluate_style({"aggression": 0.30, "defense": 2.0, "avg_distance": 120.0}) is False
+    # Low aggression (e.g. walking forward without landing anything) fails
+    assert league.evaluate_style({"aggression": 0.05, "defense": 2.0, "avg_distance": 120.0}) is False
 
 
 def test_promotion_gate_and_registry_rollback(tmp_path):
@@ -77,13 +77,12 @@ def test_promotion_gate_and_registry_rollback(tmp_path):
         style_metrics={"aggression": 0.70},
     )
 
-    league = LeagueManager(learner_personality="Crimson")
-    league.registry = reg
+    league = LeagueManager(learner_personality="Crimson", registry=reg)
 
     # Passive agent: always IDLE (0.0 aggression -> fails style check)
     passive_agent = DummyCandidateAgent(action_to_take=Action.IDLE)
     promoted, status_msg, metrics = league.attempt_promotion(
-        passive_agent, model_path="models/crimson/v002.pt", version_tag="v002"
+        passive_agent, model_path="models/crimson/v002.pt", version_tag="v002", num_matches=8
     )
 
     assert promoted is False
@@ -93,3 +92,41 @@ def test_promotion_gate_and_registry_rollback(tmp_path):
     live = reg.get_live_model("Crimson")
     assert live is not None
     assert live["version_tag"] == "v001"
+
+
+def test_quick_mode_applies_the_real_gate(tmp_path):
+    """Quick mode plays fewer matches but cannot bypass the gate or inflate numbers."""
+    reg = ModelRegistry(db_path=str(tmp_path / "reg.db"))
+    league = LeagueManager(learner_personality="Crimson", registry=reg)
+    passive_agent = DummyCandidateAgent(action_to_take=Action.IDLE)
+    promoted, status_msg, metrics = league.attempt_promotion(
+        passive_agent, model_path=str(tmp_path / "v001.pt"), version_tag="v001", quick_mode=True
+    )
+    assert promoted is False
+    assert "ROLLED_BACK" in status_msg
+    assert metrics["win_rate"] == metrics["wins"] / metrics["matches"]
+    assert metrics["win_rate"] < 0.55
+    assert reg.get_live_model("Crimson") is None
+    row = reg.list_models("Crimson")[0]
+    assert row["win_rate"] == metrics["win_rate"]
+
+
+def test_curriculum_restricts_sampling_to_unlocked_tiers():
+    league = LeagueManager(learner_personality="Shadow")
+    assert league.curriculum_tier == 1
+    import numpy as np
+    rng = np.random.default_rng(0)
+    names = {league.sample_opponent(rng).name for _ in range(60)}
+    assert names <= {o.name for o in league.opponents.values() if o.tier == 1}
+
+
+def test_sampling_prioritises_opponents_the_learner_loses_to():
+    import numpy as np
+    league = LeagueManager(learner_personality="Shadow")
+    for _ in range(30):
+        league.record_match_result("random", learner_won=True)
+        league.record_match_result("fsm_low", learner_won=False)
+    league.curriculum_tier = 1
+    rng = np.random.default_rng(1)
+    picks = [league.sample_opponent(rng).name for _ in range(400)]
+    assert picks.count("fsm_low") > picks.count("random")

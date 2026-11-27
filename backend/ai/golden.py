@@ -6,32 +6,35 @@ the enemy's patterns (tracks how often they attack, block, jump, etc.).
 """
 
 from backend.ai.actions import ALL_ACTIONS, ATTACKS, DEFENCE, Action
-from backend.ai.base_agent import Agent
-from backend.ai.choice import pick
+from backend.ai.fsm_base import (
+    DISABLED, HEAVY_FAMILY, LIGHT_FAMILY, OUT_OF_RANGE, SKIP, THROW_RANGE,
+    FighterTuning, FSMFighter, heavy_variant, light_variant, super_cost,
+)
 from backend.ai.observation import Observation
 from backend.ai.personalities import GOLDEN
-from backend.ai.zones import Spacing, Zone, ZoneTracker, spacing_for
+from backend.ai.zones import Spacing, Zone, spacing_for
+
+HEAVY_REACH = 100.0
 
 
-class GoldenAgent(Agent):
+class GoldenAgent(FSMFighter):
     """Adaptive strategist who learns during the fight."""
 
+    TUNING = FighterTuning(
+        anti_air_hit=9.4, anti_air_close=6.8, anti_air_range=68.0,
+        throw_vs_block=0.0, throw_normal=0.0,   # Golden's throw is scored in score_special
+        jump_kick=8.5, jump_punch=8.2, jump_far=1.0,
+        crouch_far=0.3, burst_health=0.40, idle=0.2,
+    )
+
     def __init__(self, player=1, difficulty="LOW", seed=None):
-        super().__init__(
-            name="Golden",
-            player=player,
-            difficulty=difficulty,
-            personality=GOLDEN,
-            seed=seed,
-        )
-        self.zone_tracker = ZoneTracker()
+        super().__init__("Golden", GOLDEN, player=player, difficulty=difficulty, seed=seed)
         self.enemy_action_counts = {a: 0 for a in ALL_ACTIONS}
         self.total_observations = 0
         self.current_likes = dict(self.personality.likes())
 
     def reset(self):
         super().reset()
-        self.zone_tracker.reset()
         self.enemy_action_counts = {a: 0 for a in ALL_ACTIONS}
         self.total_observations = 0
         self.current_likes = dict(self.personality.likes())
@@ -76,198 +79,90 @@ class GoldenAgent(Agent):
             self.current_likes["closeness"] = min(10, base["closeness"] +
                                                    speed * 20)
 
-    def choose_action(self, obs: Observation):
-        """Score every allowed action using adapted likes, then pick one."""
-        from backend.ai.rumble_ai import evaluate_rumble_macro
-        rumble_act = evaluate_rumble_macro(obs, self.name, self.difficulty, self.rng)
-        if rumble_act is not None:
-            return rumble_act, {rumble_act: 10.0}
+    def shield_prediction(self, obs: Observation):
+        attack_rate = self._attack_rate()
+        return (attack_rate > 0.35 and obs.distance <= obs.enemy_reach + 60.0) or obs.enemy_is_attacking
 
-        if obs.enable_shield_wall:
-            from backend.ai.shield_ai import evaluate_shield_action
-            attack_rate = sum(self.enemy_action_counts.get(a, 0) for a in ATTACKS) / max(1, self.total_observations)
-            pred_attack = (attack_rate > 0.35 and obs.distance <= obs.enemy_reach + 60.0) or obs.enemy_is_attacking
-            shield_act = evaluate_shield_action(
-                obs, self.name, self.difficulty, self.rng, predicted_enemy_attack=pred_attack
-            )
-            if shield_act is not None:
-                return shield_act, {shield_act: 10.0}
-
-        scores = {}
-        zone = self.zone_tracker.update(obs.distance)
-        p = self.personality
-        panicking = obs.is_panicking(p)
-        likes = self.current_likes
-        spacing = spacing_for(obs.distance, p)
+    def _attack_rate(self) -> float:
         total = max(1, self.total_observations)
-        attack_rate = sum(self.enemy_action_counts.get(a, 0) for a in ATTACKS) / total
+        return sum(self.enemy_action_counts.get(a, 0) for a in ATTACKS) / total
 
-        # --- Score each action ---
-        for action in ALL_ACTIONS:
-            score = 0.0
-
-            if action in (Action.FORWARD, Action.DASH):
-                closeness_w = likes["closeness"] / 10
-                mult = 1.2 if action == Action.DASH else 1.0
-                if zone == Zone.FAR:
-                    score = (6.0 + closeness_w * 3.5) * mult
-                elif zone == Zone.MID:
-                    score = (5.5 + closeness_w * 3.5) * mult
-                else:
-                    score = (3.0 + closeness_w * 2.0 if not obs.i_can_hit else 1.0)
-
-            elif action in (Action.BACK, Action.BACKDASH):
-                safe_w = likes["safe_distance"] / 10
-                if spacing == Spacing.TOO_CLOSE and not obs.i_can_hit:
-                    score = 1.5 + safe_w * 2.0
-                elif obs.i_am_cornered:
-                    score = 0.3
-                else:
-                    score = 0.8 + safe_w * 0.8
-
-            elif action == Action.JUMP:
-                corner_w = likes["corner_avoid"] / 10
-                if obs.i_am_cornered:
-                    score = 3.0 + corner_w * 4.0
-                elif obs.enemy_is_attacking:
-                    score = 2.0
-                else:
-                    score = 0.5
-
-            elif action in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB, Action.CROUCH_KICK):
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                if obs.enemy_is_stuck and obs.i_can_hit:
-                    punish_w = likes["block_punish"] / 10
-                    base = 8.2 + punish_w * 2.0
-                elif obs.i_can_hit:
-                    base = 9.4
-                else:
-                    base = 0.5
-                if action == Action.LIGHT:
-                    score = base
-                elif action == Action.LIGHT_KICK:
-                    score = base * 0.97
-                elif action == Action.CROUCH_KICK:
-                    score = base * (1.02 if obs.enemy_is_blocking and not obs.enemy_is_crouching else 0.94)
-                else:
-                    score = base * 0.93
-
-            elif action in (Action.HEAVY, Action.HEAVY_KICK, Action.LOW_SWEEP, Action.OVERHEAD):
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                can_hit_heavy = (obs.distance <= 100)
-                if obs.enemy_is_stuck and can_hit_heavy:
-                    punish_w = likes["block_punish"] / 10
-                    base = 8.2 + punish_w * 2.0
-                elif can_hit_heavy:
-                    base = 9.1
-                else:
-                    base = 0.3
-                if action == Action.HEAVY:
-                    score = base
-                elif action == Action.HEAVY_KICK:
-                    score = base * 0.97
-                elif action == Action.LOW_SWEEP:
-                    score = base * (1.03 if obs.enemy_is_blocking and not obs.enemy_is_crouching else 0.94)
-                else:
-                    score = base * (1.03 if obs.enemy_is_crouching else 0.93)
-
-            elif action == Action.ANTI_AIR:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                score = 9.4 if obs.enemy_in_air and obs.i_can_hit else (6.8 if obs.distance <= 68 else 0.2)
-
-            elif action == Action.THROW:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                closeness_w = likes["closeness"] / 10
-                score = ((6.8 + closeness_w * 3.0) if obs.enemy_is_blocking else (6.2 + closeness_w * 2.2)) if obs.distance <= 48 else 0.2
-
-            elif action in (Action.BLOCK, Action.BLOCK_LOW):
-                if obs.my_in_air:
-                    score = 0.0
-                    continue
-                punish_w = likes["block_punish"] / 10
-                if obs.enemy_can_hit and obs.enemy_is_attacking:
-                    base_blk = 4.0 + punish_w * 4.0
-                elif zone == Zone.CLOSE:
-                    base_blk = 2.0 + punish_w * 2.0
-                else:
-                    base_blk = 0.5
-                score = base_blk if action == Action.BLOCK else base_blk * 0.85
-
-            elif action in (Action.JUMP_PUNCH, Action.JUMP_KICK):
-                if not obs.my_in_air or not obs.can_attack:
-                    continue
-                score = (8.5 if action == Action.JUMP_KICK else 8.2) if obs.distance <= 95 else 1.0
-
-            elif action == Action.CROUCH:
-                if obs.my_in_air:
-                    continue
-                score = 1.0 if obs.i_can_hit else 0.3
-
-            # --- Golden Signature Moves (Phase 4 & 5) ---
-            elif action == Action.BURST:
-                if obs.my_hitstun > 10 and obs.my_meter >= 50.0 and obs.my_health < 0.40:
-                    score = 10.0
-                else:
-                    score = 0.0
-
-            elif action == Action.SPECIAL_NEUTRAL:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Golden Read: predictive counter
-                top_action_count = max(self.enemy_action_counts.values()) if self.enemy_action_counts else 0
-                has_habit = self.total_observations > 25 and (top_action_count / total > 0.35)
-                score = 9.0 if (has_habit and zone in (Zone.MID, Zone.CLOSE)) else (7.2 if zone == Zone.MID else 0.2)
-
-            elif action == Action.SPECIAL_DOWN:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Tactician Stance: stance transition
-                score = 2.5 if zone == Zone.FAR else 0.4
-
-            elif action == Action.SPECIAL_FORWARD:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Gambit Strike: high-risk high-reward poke
-                if obs.enemy_is_stuck and obs.distance <= 95:
-                    score = 9.6
-                elif obs.distance <= 95:
-                    score = 8.4 if obs.enemy_is_open else 7.8
-                else:
-                    score = 0.5
-
-            elif action == Action.SPECIAL_BACK:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Tactical Step: reposition
-                score = 7.6 if obs.enemy_is_attacking and zone == Zone.CLOSE else 0.4
-
-            elif action == Action.SUPER:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Checkmate super finisher
-                super_cost = 60.0 if obs.my_health < 0.25 else 100.0
-                if obs.my_meter >= super_cost and obs.distance <= 100:
-                    score = 10.5 if obs.enemy_is_stuck or obs.enemy_hitstun > 0 else 7.5
-                else:
-                    score = 0.0
-
-            elif action == Action.IDLE:
-                score = 0.2
-
+    def score_special(self, action: Action, obs: Observation, zone):
+        likes = self.current_likes
+        if action in (Action.FORWARD, Action.DASH):
+            closeness_w = likes["closeness"] / 10
+            mult = 1.2 if action == Action.DASH else 1.0
+            if zone == Zone.FAR:
+                return (6.0 + closeness_w * 3.5) * mult
+            if zone == Zone.MID:
+                return (5.5 + closeness_w * 3.5) * mult
+            return 3.0 + closeness_w * 2.0 if not obs.i_can_hit else 1.0
+        if action in (Action.BACK, Action.BACKDASH):
+            safe_w = likes["safe_distance"] / 10
+            if spacing_for(obs.distance, self.personality) == Spacing.TOO_CLOSE and not obs.i_can_hit:
+                return 1.5 + safe_w * 2.0
+            if obs.i_am_cornered:
+                return 0.3
+            return 0.8 + safe_w * 0.8
+        if action == Action.JUMP:
+            if obs.i_am_cornered:
+                return 3.0 + likes["corner_avoid"] / 10 * 4.0
+            return 2.0 if obs.enemy_is_attacking else 0.5
+        if action in LIGHT_FAMILY:
+            if obs.enemy_is_stuck and obs.i_can_hit:
+                base = 8.2 + likes["block_punish"] / 10 * 2.0
             else:
-                score = 0.0
+                base = 9.4 if obs.i_can_hit else 0.5
+            return light_variant(base, action, obs)
+        if action in HEAVY_FAMILY:
+            in_reach = obs.distance <= HEAVY_REACH
+            if obs.enemy_is_stuck and in_reach:
+                base = 8.2 + likes["block_punish"] / 10 * 2.0
+            else:
+                base = 9.1 if in_reach else 0.3
+            return heavy_variant(base, action, obs)
+        if action == Action.THROW:
+            if obs.distance > THROW_RANGE:
+                return OUT_OF_RANGE
+            closeness_w = likes["closeness"] / 10
+            return (6.8 + closeness_w * 3.0) if obs.enemy_is_blocking else (6.2 + closeness_w * 2.2)
+        if action in (Action.BLOCK, Action.BLOCK_LOW):
+            if obs.my_in_air:
+                return SKIP
+            punish_w = likes["block_punish"] / 10
+            if obs.enemy_can_hit and obs.enemy_is_attacking:
+                base_blk = 4.0 + punish_w * 4.0
+            elif zone == Zone.CLOSE:
+                base_blk = 2.0 + punish_w * 2.0
+            else:
+                base_blk = 0.5
+            return base_blk if action == Action.BLOCK else base_blk * 0.85
+        if action == Action.SPECIAL_NEUTRAL:   # Golden Read: predictive counter
+            total = max(1, self.total_observations)
+            top_count = max(self.enemy_action_counts.values()) if self.enemy_action_counts else 0
+            has_habit = self.total_observations > 25 and (top_count / total > 0.35)
+            if has_habit and zone in (Zone.MID, Zone.CLOSE):
+                return 9.0
+            return 7.2 if zone == Zone.MID else 0.2
+        if action == Action.SPECIAL_DOWN:      # Tactician Stance
+            return 2.5 if zone == Zone.FAR else 0.4
+        if action == Action.SPECIAL_FORWARD:   # Gambit Strike
+            if obs.distance > 95:
+                return 0.5
+            if obs.enemy_is_stuck:
+                return 9.6
+            return 8.4 if obs.enemy_is_open else 7.8
+        if action == Action.SPECIAL_BACK:      # Tactical Step
+            return 7.6 if obs.enemy_is_attacking and zone == Zone.CLOSE else 0.4
+        if action == Action.SUPER:             # Checkmate
+            if obs.my_meter >= super_cost(obs) and obs.distance <= 100:
+                return 10.5 if obs.enemy_is_stuck or obs.enemy_hitstun > 0 else 7.5
+            return DISABLED
+        return None
 
-            # --- Panic mode ---
-            if panicking:
-                if action in (Action.LIGHT, Action.HEAVY, Action.LIGHT_KICK, Action.HEAVY_KICK, Action.FORWARD):
-                    score *= 1.3
-                elif action in (Action.BLOCK, Action.BLOCK_LOW):
-                    score *= 1.2
-
-            scores[action] = score
-
-        return self._select_action_with_rl_and_diversity(scores, obs, variety=p.variety)
+    def panic_multiplier(self, action: Action) -> float:
+        if action in (Action.LIGHT, Action.HEAVY, Action.LIGHT_KICK, Action.HEAVY_KICK, Action.FORWARD):
+            return 1.3
+        if action in (Action.BLOCK, Action.BLOCK_LOW):
+            return 1.2
+        return 1.0

@@ -77,7 +77,21 @@ from frontend.fantasy_ui import (
     draw_obsidian_card,
     draw_dark_fantasy_menu_buttons,
     draw_description_pill,
+    draw_hint_bar,
+    draw_button,
 )
+
+
+def _draw_star(surface: pygame.Surface, cx: int, cy: int, r: int, filled: bool = True) -> None:
+    """Five-point vector star (fonts may lack the ★ glyph)."""
+    pts = []
+    for k in range(10):
+        ang = -math.pi / 2 + k * math.pi / 5
+        rr = r if k % 2 == 0 else r * 0.45
+        pts.append((cx + rr * math.cos(ang), cy + rr * math.sin(ang)))
+    if filled:
+        pygame.draw.polygon(surface, (255, 215, 60), pts)
+    pygame.draw.polygon(surface, (255, 235, 150) if filled else (95, 100, 120), pts, 1)
 
 
 # ----------------------------------------------------------------------
@@ -498,9 +512,7 @@ def render_story_faceoff_frame(
         pygame.draw.circle(surface, col, (dx, dot_y), r)
         pygame.draw.circle(surface, BLACK, (dx, dot_y), r, 1)
 
-    hint_str = "[SPACE / ENTER] Next Dialogue Bubble   |   [ESC] Skip to Fight"
-    h_surf = font_hint.render(hint_str, True, (160, 200, 240))
-    surface.blit(h_surf, (SCREEN_WIDTH // 2 - h_surf.get_width() // 2, SCREEN_HEIGHT - 32))
+    draw_hint_bar(surface, [("Space", "Next line"), ("Esc", "Skip to fight")])
 
 
 def story_screen(
@@ -605,13 +617,15 @@ def campaign_map_screen(
         mouse_pos = pygame.mouse.get_pos()
         node_rects = []
 
-        # 8 nodes laid out in 2 rows of 4 nodes
+        # 8 nodes laid out in 2 rows of 4, sized from the screen dimensions
+        margin, gap = 48, 18
+        card_w = (SCREEN_WIDTH - 2 * margin - 3 * gap) // 4
+        card_h = int(SCREEN_HEIGHT * 0.25)
+        top = int(SCREEN_HEIGHT * 0.26)
         for i in range(8):
-            row = i // 4
-            col = i % 4
-            x = 90 + col * 280
-            y = 175 + row * 175
-            node_rects.append(pygame.Rect(x, y, 260, 140))
+            row, col = divmod(i, 4)
+            node_rects.append(pygame.Rect(margin + col * (card_w + gap),
+                                          top + row * (card_h + gap + 12), card_w, card_h))
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -676,49 +690,41 @@ def campaign_map_screen(
             is_comp = (b_id in completed)
             is_hover = r.collidepoint(mouse_pos) or (selected_index == i)
 
-            # Node card styling
-            if not is_unlocked:
-                bg_col = (18, 19, 30)
-                border_col = (45, 48, 65)
-            elif is_hover:
-                bg_col = (35, 38, 65)
-                border_col = GOLD_TEXT
-            elif is_comp:
-                bg_col = (24, 38, 32)
-                border_col = SUCCESS_GREEN
-            else:
-                bg_col = PANEL_DARK
-                border_col = PANEL_BORDER
-
-            pygame.draw.rect(surface, bg_col, r, border_radius=10)
-            pygame.draw.rect(surface, border_col, r, width=2 if not is_hover else 3, border_radius=10)
-
             if is_unlocked:
+                draw_obsidian_card(surface, r, is_selected=is_hover, border_radius=12,
+                                   border_color=SUCCESS_GREEN if is_comp else PANEL_BORDER)
+                # Opponent portrait strip on the right of the card
+                p_h = r.height - 20
+                p_w = int(p_h * 0.8)
+                portrait = assets.get_portrait(battle["opponent"], size=(p_w, p_h), flip_h=True)
+                p_rect = pygame.Rect(r.right - p_w - 10, r.y + 10, p_w, p_h)
+                surface.blit(portrait, p_rect)
+                pygame.draw.rect(surface, GOLD_TEXT if is_hover else (70, 75, 95), p_rect, 1, border_radius=4)
+
                 b_num_surf = font_node.render(f"BATTLE {b_id}", True, GOLD_TEXT if is_hover else WHITE)
                 opp_surf = font_sub.render(f"vs {battle['opponent']}", True, TEXT_WHITE)
-                surface.blit(b_num_surf, (r.x + 16, r.y + 14))
-                surface.blit(opp_surf, (r.x + 16, r.y + 44))
-
-                # Tier badge top-right
-                _draw_tier_badge(surface, r.right - 80, r.y + 14, battle["difficulty"])
+                surface.blit(b_num_surf, (r.x + 14, r.y + 14))
+                surface.blit(opp_surf, (r.x + 14, r.y + 42))
+                _draw_tier_badge(surface, r.x + 14, r.y + 66, battle["difficulty"])
 
                 if is_comp:
                     stars_count = stars_dict.get(str(b_id), 3)
-                    star_str = "★" * stars_count + "☆" * (3 - stars_count)
-                    star_surf = font_node.render(star_str, True, (255, 220, 50))
-                    surface.blit(star_surf, (r.x + 16, r.bottom - 36))
+                    for si in range(3):
+                        _draw_star(surface, r.x + 22 + si * 22, r.bottom - 24, 8,
+                                   filled=si < stars_count)
                 else:
                     ready_badge = font_sub.render("READY", True, SUCCESS_GREEN)
-                    surface.blit(ready_badge, (r.x + 16, r.bottom - 34))
+                    surface.blit(ready_badge, (r.x + 14, r.bottom - 32))
             else:
+                draw_obsidian_card(surface, r, border_radius=12, bg_color=(14, 15, 24),
+                                   border_color=(45, 48, 65))
                 _draw_emblem_icon(surface, r.centerx, r.centery - 10, "lock", is_active=False)
-                lock_text = font_sub.render("LOCKED", True, (90, 95, 115))
-                surface.blit(lock_text, (r.centerx - lock_text.get_width() // 2, r.bottom - 35))
+                lock_text = font_sub.render(f"BATTLE {b_id}  ·  LOCKED", True, (90, 95, 115))
+                surface.blit(lock_text, (r.centerx - lock_text.get_width() // 2, r.bottom - 32))
 
         # Bottom Helper Bar
-        h_text = "ARROW KEYS / CLICK: Select Battle   |   [ENTER]: Fight   |   [U]: Upgrades   |   [ESC]: Back"
-        h_surf = font_hint.render(h_text, True, (160, 200, 240))
-        surface.blit(h_surf, (SCREEN_WIDTH // 2 - h_surf.get_width() // 2, SCREEN_HEIGHT - 38))
+        draw_hint_bar(surface, [("← → ↑ ↓", "Select battle"), ("Enter", "Fight"),
+                                ("U", "Upgrades"), ("Esc", "Back")])
 
         pygame.display.flip()
 
@@ -791,19 +797,23 @@ def upgrade_screen(
                         audio.play_sfx("menu_error")
 
         _draw_dark_fantasy_backdrop(
-            surface, frame_counter, "WARRIOR UPGRADES & ENHANCEMENTS", player_id,
+            surface, frame_counter, "WARRIOR UPGRADES", player_id,
             sub_title="Empower combat attributes with earned tournament gold"
         )
 
         # Character Selector Carousel
         bar_text = f"<   {char.upper()} (LEVEL {current_lvl}/{MAX_LEVEL})   >"
         b_surf = font_large.render(bar_text, True, GOLD_TEXT)
-        surface.blit(b_surf, (SCREEN_WIDTH // 2 - b_surf.get_width() // 2, 95))
+        surface.blit(b_surf, (SCREEN_WIDTH // 2 - b_surf.get_width() // 2, 106))
 
         # Comparison Card Panel
-        card_rect = pygame.Rect(SCREEN_WIDTH // 2 - 320, 150, 640, 310)
-        pygame.draw.rect(surface, PANEL_DARK, card_rect, border_radius=12)
-        pygame.draw.rect(surface, PANEL_BORDER, card_rect, width=2, border_radius=12)
+        card_rect = pygame.Rect(SCREEN_WIDTH // 2 - 250, 150, 640, 310)
+        draw_obsidian_card(surface, card_rect, border_radius=12)
+        # Fighter portrait beside the comparison card
+        port_rect = pygame.Rect(card_rect.x - 196, card_rect.y, 180, card_rect.height)
+        draw_obsidian_card(surface, port_rect, is_selected=True, border_radius=12)
+        port = assets.get_portrait(char, size=(port_rect.width - 16, port_rect.height - 16))
+        surface.blit(port, (port_rect.x + 8, port_rect.y + 8))
 
         # Headers
         h1 = font_stat.render("Attribute", True, TEXT_MUTED)
@@ -839,18 +849,13 @@ def upgrade_screen(
             y_pos += 58
 
         # Purchase Button
-        btn_bg = (40, 130, 60) if can_afford else (30, 32, 45)
-        if is_buy_hover and can_afford:
-            btn_bg = (55, 175, 80)
-        pygame.draw.rect(surface, btn_bg, buy_btn_rect, border_radius=10)
-        pygame.draw.rect(surface, (100, 240, 140) if can_afford else (60, 65, 85), buy_btn_rect, width=2, border_radius=10)
+        btn_str = "MAX LEVEL REACHED" if current_lvl >= MAX_LEVEL else f"UPGRADE  ·  {upgrade_cost:,} G"
+        if not can_afford and current_lvl < MAX_LEVEL:
+            btn_str = f"NEED {upgrade_cost:,} G  (HAVE {coins:,})"
+        draw_button(surface, buy_btn_rect, btn_str, selected=is_buy_hover and can_afford,
+                    disabled=not can_afford, accent=SUCCESS_GREEN, primary=can_afford)
 
-        btn_str = "MAX LEVEL REACHED" if current_lvl >= MAX_LEVEL else f"UPGRADE ({upgrade_cost:,} G)"
-        b_label = font_sub.render(btn_str, True, WHITE if can_afford else GREY)
-        surface.blit(b_label, b_label.get_rect(center=buy_btn_rect.center))
-
-        h_surf = font_hint.render("LEFT/RIGHT: Switch Warrior   |   ENTER or CLICK: Upgrade   |   ESC: Back", True, (160, 200, 240))
-        surface.blit(h_surf, (SCREEN_WIDTH // 2 - h_surf.get_width() // 2, SCREEN_HEIGHT - 35))
+        draw_hint_bar(surface, [("← →", "Switch warrior"), ("Enter", "Upgrade"), ("Esc", "Back")])
 
         pygame.display.flip()
 
@@ -892,33 +897,34 @@ def trophy_room_screen(surface: pygame.Surface, clock: pygame.time.Clock, player
                 scroll_y = max(0, min(max_scroll, scroll_y - event.y * 30))
 
         _draw_dark_fantasy_backdrop(
-            surface, frame_counter, "TROPHY ROOM & ACCOLADES", player_id,
+            surface, frame_counter, "TROPHY ROOM", player_id,
             sub_title=f"Achievements Unlocked: {unlocked_count} / {total_trophies} ({int(unlocked_count / total_trophies * 100)}%)"
         )
 
         # Molten Gold Global Progress Bar
         bar_w = 460
-        bar_rect = pygame.Rect(SCREEN_WIDTH // 2 - bar_w // 2, 95, bar_w, 14)
+        bar_rect = pygame.Rect(SCREEN_WIDTH // 2 - bar_w // 2, 108, bar_w, 12)
         _draw_segmented_bar(surface, bar_rect, unlocked_count, total_trophies, GOLD_TEXT, segments=18)
 
         # 3 columns x 6 rows of Trophy Cards
-        start_y = 135 - scroll_y
+        start_y = 134 - scroll_y
         for i, trophy in enumerate(ALL_TROPHIES):
             col = i % 3
             row = i // 3
-            x = 80 + col * 380
+            t_gap, t_side = 16, 40
+            t_w = (SCREEN_WIDTH - 2 * t_side - 2 * t_gap) // 3
+            x = t_side + col * (t_w + t_gap)
             y = start_y + row * 92
-            if y < 110 or y > SCREEN_HEIGHT - 60:
+            if y < 126 or y + 80 > SCREEN_HEIGHT - 44:
                 continue
 
-            card_rect = pygame.Rect(x, y, 360, 80)
+            card_rect = pygame.Rect(x, y, t_w, 80)
             is_unlocked = (trophy["id"] in unlocked_ids)
 
             bg_col = PANEL_DARK if is_unlocked else (18, 19, 30)
             border_col = PANEL_BORDER if is_unlocked else (45, 48, 65)
 
-            pygame.draw.rect(surface, bg_col, card_rect, border_radius=10)
-            pygame.draw.rect(surface, border_col, card_rect, width=2 if is_unlocked else 1, border_radius=10)
+            draw_obsidian_card(surface, card_rect, border_radius=10, bg_color=bg_col, border_color=border_col)
 
             # Emblem Badge
             icon_type = "swords" if is_unlocked else "lock"
@@ -930,15 +936,14 @@ def trophy_room_screen(surface: pygame.Surface, clock: pygame.time.Clock, player
 
             t_name = font_name.render(trophy["name"], True, t_col)
             t_desc = font_desc.render(trophy["desc"], True, d_col)
-            surface.blit(t_name, (card_rect.x + 72, card_rect.y + 16))
-            surface.blit(t_desc, (card_rect.x + 72, card_rect.y + 44))
+            surface.blit(t_name, (card_rect.x + 72, card_rect.y + 18))
+            surface.blit(t_desc, (card_rect.x + 72, card_rect.y + 46))
 
-            # Tier status
-            tier_lbl = "UNLOCKED" if is_unlocked else "LOCKED"
-            _draw_tier_badge(surface, card_rect.right - 90, card_rect.y + 14, tier_lbl)
+            # Unlocked tick (locked state is already shown by the padlock emblem)
+            if is_unlocked:
+                _draw_tier_badge(surface, card_rect.right - 74, card_rect.y + 8, "UNLOCKED")
 
-        h_surf = font_hint.render("UP / DOWN / SCROLL: Browse Achievements   |   ESC: Return to Main Menu", True, (160, 200, 240))
-        surface.blit(h_surf, (SCREEN_WIDTH // 2 - h_surf.get_width() // 2, SCREEN_HEIGHT - 30))
+        draw_hint_bar(surface, [("↑ ↓", "Browse"), ("Wheel", "Scroll"), ("Esc", "Back")])
 
         pygame.display.flip()
 
@@ -1083,7 +1088,8 @@ def missions_screen(surface: pygame.Surface, clock: pygame.time.Clock, player_id
             missions_to_display = ALL_MISSIONS
 
         # 3. Main 8-Card Grid (2 columns x 4 rows)
-        card_w, card_h = 550, 94
+        col_gap, side = 20, 40
+        card_w, card_h = (SCREEN_WIDTH - 2 * side - col_gap) // 2, 94
         start_y = 145
 
         # Icon mapping
@@ -1111,8 +1117,8 @@ def missions_screen(surface: pygame.Surface, clock: pygame.time.Clock, player_id
         for i, m_def in enumerate(missions_to_display[:8]):
             col = i % 2
             row = i // 2
-            cx = 75 + col * 580
-            cy = start_y + row * 106
+            cx = side + col * (card_w + col_gap)
+            cy = start_y + row * 102
             card_rect = pygame.Rect(cx, cy, card_w, card_h)
 
             m_data = user_missions.get(m_def["id"], {"progress": 0, "completed": 0, "claimed": 0})
@@ -1216,9 +1222,8 @@ def missions_screen(surface: pygame.Surface, clock: pygame.time.Clock, player_id
                 surface.blit(r_surf, (rc_rect.x + 26, rc_rect.centery - r_surf.get_height() // 2))
 
         # 4. Bottom Controls Bar
-        h_text = "[ESC] Back   |   [ENTER] Claim   |   [TAB] Switch Tab"
-        h_surf = font_hint.render(h_text, True, (160, 200, 240))
-        surface.blit(h_surf, (80, SCREEN_HEIGHT - 40))
+        draw_hint_bar(surface, [("Esc", "Back"), ("Enter", "Claim"), ("Tab", "Switch tab")],
+                      y=SCREEN_HEIGHT - 30)
 
         # Prominent Gold [CLAIM ALL (X)] Button
         ready_count = len(all_ready_missions)

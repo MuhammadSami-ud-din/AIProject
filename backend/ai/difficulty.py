@@ -7,7 +7,9 @@ No extra health or damage is given to any mode — only decision quality changes
 
 from collections import deque
 from dataclasses import dataclass
+import logging
 import os
+import time
 from typing import Dict, Optional
 
 from backend.ai.actions import ALL_ACTIONS, ATTACKS, DEFENCE, MOVEMENT, Action
@@ -31,8 +33,14 @@ class DifficultyProfile:
     anti_air_chance: float          # chance to anti-air a jumping enemy
     hesitation: float               # chance to stay idle for a beat
     whiff_rate: float               # chance to throw an attack out of range
-    search_depth: int               # minimax lookahead plies
+    search_depth: int               # lookahead plies (HELL runs the in-game search)
     opponent_model: str             # "off", "counts", "bayes", "live"
+    # Human-like execution (Step 11): reaction time is sampled per reaction,
+    # not fixed, and inputs are occasionally dropped or pressed late.
+    reaction_jitter: float = 0.0    # std-dev (frames) of the sampled reaction delay
+    input_drop_chance: float = 0.0  # chance a chosen input is not executed
+    input_late_chance: float = 0.0  # chance a chosen input comes 1-3 frames late
+    policy_weight: float = 0.0      # weight of the learned policy in the final scores
 
 
 # ======================================================================
@@ -52,6 +60,10 @@ DIFFICULTY_PROFILES: Dict[str, DifficultyProfile] = {
         whiff_rate=0.30,
         search_depth=1,
         opponent_model="off",
+        reaction_jitter=6.0,
+        input_drop_chance=0.06,
+        input_late_chance=0.1,
+        policy_weight=0.0,
     ),
     "MEDIUM": DifficultyProfile(
         name="MEDIUM",
@@ -66,6 +78,10 @@ DIFFICULTY_PROFILES: Dict[str, DifficultyProfile] = {
         whiff_rate=0.15,
         search_depth=2,
         opponent_model="counts",
+        reaction_jitter=4.0,
+        input_drop_chance=0.03,
+        input_late_chance=0.06,
+        policy_weight=0.0,
     ),
     "HIGH": DifficultyProfile(
         name="HIGH",
@@ -80,6 +96,10 @@ DIFFICULTY_PROFILES: Dict[str, DifficultyProfile] = {
         whiff_rate=0.05,
         search_depth=3,
         opponent_model="bayes",
+        reaction_jitter=2.5,
+        input_drop_chance=0.012,
+        input_late_chance=0.03,
+        policy_weight=0.5,
     ),
     "HELL": DifficultyProfile(
         name="HELL",
@@ -94,6 +114,10 @@ DIFFICULTY_PROFILES: Dict[str, DifficultyProfile] = {
         whiff_rate=0.01,
         search_depth=4,
         opponent_model="live",
+        reaction_jitter=1.0,
+        input_drop_chance=0.003,
+        input_late_chance=0.01,
+        policy_weight=0.7,
     ),
 }
 
@@ -110,8 +134,68 @@ _NEXT_MODE = {
     "HELL": None,
 }
 
-# Module-level cache for learned models so disk/SQLite is queried once per character
+logger = logging.getLogger(__name__)
+
+# Cache of resolved learned-model paths: character -> (signature, path or None).
+# The signature combines the registry state and the checkpoint folder's file
+# names/mtimes, so a newly trained or promoted model is picked up at the next
+# round instead of a stale "no model" result being cached forever.
 _LEARNED_MODEL_CACHE: Dict[str, tuple] = {}
+
+# In-game search (HELL): only when the fighters are close enough for the next
+# plies to matter, with a hard per-call budget.
+SEARCH_ENGAGE_DISTANCE = 220.0
+SEARCH_BUDGET_S = 0.003
+SEARCH_CANDIDATES = 5
+EXPECTIMAX_MIN_ACCURACY = 0.35   # opponent-model accuracy needed for expectimax
+EXPECTIMAX_MIN_PREDICTIONS = 30
+
+
+def resolve_learned_model(character: str, models_dir: Optional[str] = None,
+                          registry_path: Optional[str] = None) -> Optional[str]:
+    """Path of the model HIGH/HELL should use for ``character`` (or None).
+
+    Order: registry "live" row (if its file is compatible) -> newest compatible
+    checkpoint in models/<character>/ that the gate did not roll back ->
+    bc_model.pt. Cached with invalidation.
+    """
+    try:
+        from backend.learning.checkpoints import (
+            checkpoint_signature, find_latest_checkpoint, load_compatible_state_dict,
+        )
+        from backend.learning.league import ModelRegistry
+    except Exception:
+        logger.warning("learning stack unavailable; HIGH/HELL use the FSM only", exc_info=True)
+        return None
+
+    reg = None
+    reg_sig: tuple = ()
+    try:
+        reg = ModelRegistry(registry_path)
+        reg_sig = reg.signature(character)
+    except Exception:
+        logger.warning("model registry unavailable", exc_info=True)
+    sig = (reg_sig, checkpoint_signature(character, models_dir), models_dir, registry_path)
+    cache_key = f"{character}|{models_dir}|{registry_path}"
+    cached = _LEARNED_MODEL_CACHE.get(cache_key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+
+    path = None
+    rejected = []
+    if reg is not None:
+        try:
+            live = reg.get_live_model(character)
+            if live and os.path.exists(live["file_path"]) and load_compatible_state_dict(live["file_path"]) is not None:
+                path = live["file_path"]
+            rejected = [r["file_path"] for r in reg.list_models(character) if r["status"] == "rolled_back"]
+        except Exception:
+            logger.warning("could not read live model for %s", character, exc_info=True)
+    if path is None:
+        # No promoted model: newest checkpoint the promotion gate has not rejected.
+        path = find_latest_checkpoint(character, models_dir, exclude=rejected)
+    _LEARNED_MODEL_CACHE[cache_key] = (sig, path)
+    return path
 
 
 # ======================================================================
@@ -257,13 +341,32 @@ def effective_profile(difficulty: str, health: float) -> DifficultyProfile:
         whiff_rate=base.whiff_rate,
         search_depth=base.search_depth,
         opponent_model=base.opponent_model,
+        reaction_jitter=base.reaction_jitter,
+        input_drop_chance=base.input_drop_chance,
+        input_late_chance=base.input_late_chance,
+        policy_weight=base.policy_weight,
     )
 
 
 class DifficultyWrapper(Agent):
-    """Wraps a fighter agent to apply the DifficultyProfile and Adrenaline boost."""
+    """Wraps a fighter agent to apply the DifficultyProfile and Adrenaline boost.
 
-    def __init__(self, inner_agent: Agent, difficulty: str = "LOW"):
+    Decision pipeline per frame: sampled (jittered) reaction delay -> reactive
+    gates (block / anti-air / punish / combo / whiff) -> opponent model ->
+    learned policy blend (HIGH/HELL) -> in-game search (HELL) -> online
+    Q-learning -> one probabilistic pick with ONE mistake roll -> human-like
+    input execution (occasional dropped / late inputs).
+
+    Match-flow hooks for the game: ``on_round_end(result)`` and
+    ``on_match_end(result)`` (result = "p1"/"p2"/"draw" or "win"/"loss"/"draw"
+    from this AI's point of view) feed Dynamic Difficulty Adjustment when
+    ``adaptive_difficulty`` is enabled.
+    """
+
+    def __init__(self, inner_agent: Agent, difficulty: str = "LOW",
+                 use_learned_policy: bool = True, use_search: bool = True,
+                 use_opponent_model: bool = True, models_dir: Optional[str] = None,
+                 registry_path: Optional[str] = None, adaptive_difficulty: bool = False):
         if difficulty not in DIFFICULTIES:
             raise ValueError(f"difficulty must be one of {DIFFICULTIES}")
 
@@ -283,9 +386,11 @@ class DifficultyWrapper(Agent):
         self.current_profile: DifficultyProfile = self.base_profile
         self.health_zone: str = "GREEN"
 
-        # Reaction delay buffer: stores recent observations
+        # Reaction delay: ``delay`` is the profile's mean; the delay actually
+        # used is re-sampled with jitter at every decision / newly seen attack.
         self.delay: int = self.base_profile.reaction_delay
-        self.obs_buffer = deque(maxlen=max(self.base_profile.reaction_delay + 5, 30))
+        self.current_reaction_delay: int = self.base_profile.reaction_delay
+        self.obs_buffer = deque(maxlen=max(self.base_profile.reaction_delay * 2 + 10, 40))
 
         # Exposed difficulty settings (updated dynamically by Adrenaline & DDA)
         self.mistake_chance: float = self.base_profile.mistake_chance
@@ -303,29 +408,47 @@ class DifficultyWrapper(Agent):
         self._block_hold_frames: int = 0
         self._seen_enemy_stuck: bool = False
         self._punish_decision_for_window: bool = False
+        self._prev_can_attack: bool = True
         self.last_reaction_frames: Optional[int] = None
 
-        # Opponent model & Live Online Reinforcement Learner
-        self.use_search: bool = True
-        self.use_opponent_model: bool = True
-        self.use_learned_policy: bool = True
+        # Human-like input execution
+        self._late_action: Optional[Action] = None
+        self._late_frames: int = 0
+        self.dropped_inputs: int = 0
+        self.late_inputs: int = 0
+        self.mistakes_made: int = 0
+
+        # Opponent model & live online reinforcement learner (per character AND side)
+        self.use_search: bool = use_search
+        self.use_opponent_model: bool = use_opponent_model
+        self.use_learned_policy: bool = use_learned_policy
         self.opp_model: Optional[OpponentModel] = OpponentModel()
         self.enemy_counts: Dict[Action, int] = {a: 0 for a in ALL_ACTIONS}
-        self.rl_learner: OnlineCombatLearner = get_shared_combat_learner(self.inner.name)
+        self.rl_learner: OnlineCombatLearner = get_shared_combat_learner(self.inner.name, self.player)
 
-        # Dynamic Difficulty Adjustment (DDA, settings option for HIGH and HELL)
-        self.adaptive_difficulty: bool = False
+        # In-game search diagnostics
+        self.last_search: Optional[dict] = None
+        self.search_calls: int = 0
+        self.search_over_budget: int = 0
+
+        # Dynamic Difficulty Adjustment (settings option for HIGH and HELL)
+        self.adaptive_difficulty: bool = adaptive_difficulty
         self.recent_human_wins: list[float] = []
         self._dda_mistake_offset: float = 0.0
 
-        # Learned policy blending (HIGH and HELL)
-        self._learned_model = None
+        # Learned policy (HIGH and HELL)
+        self.models_dir = models_dir
+        self.registry_path = registry_path
+        self._learned_model = None      # path of the loaded model (or None)
         self._policy_agent = None
         if self.use_learned_policy and self.difficulty in ("HIGH", "HELL"):
             self._try_load_learned_model()
 
+    # ------------------------------------------------------------------
+    # Dynamic Difficulty Adjustment + match-flow hooks
+    # ------------------------------------------------------------------
     def update_dda(self, human_won: bool) -> None:
-        """Update mistake chance dynamically to maintain 45-55% player win rate."""
+        """Update mistake chance dynamically to keep the player's win rate near 45-55%."""
         if not self.adaptive_difficulty or self.difficulty not in ("HIGH", "HELL"):
             return
 
@@ -342,34 +465,45 @@ class DifficultyWrapper(Agent):
                 self._dda_mistake_offset = max(-0.05, self._dda_mistake_offset - 0.05)
                 self.mistake_chance = max(0.01, self.mistake_chance - 0.05)
 
+    def _human_won(self, result: str) -> Optional[bool]:
+        r = (result or "").strip().lower()
+        mine = "p1" if self.player == 1 else "p2"
+        theirs = "p2" if self.player == 1 else "p1"
+        if r in ("win", mine):
+            return False
+        if r in ("loss", "lose", theirs):
+            return True
+        return None   # draw / unknown: no DDA signal
+
+    def on_round_end(self, result: str) -> None:
+        """Call after every round. ``result``: "p1"/"p2"/"draw" or "win"/"loss" (AI's view)."""
+        human_won = self._human_won(result)
+        if human_won is not None:
+            self.update_dda(human_won)
+
+    def on_match_end(self, result: str) -> None:
+        """Call after a match; refreshes the learned model if a new one was promoted."""
+        if self.use_learned_policy and self.difficulty in ("HIGH", "HELL"):
+            self._try_load_learned_model()
+
+    # ------------------------------------------------------------------
     def _try_load_learned_model(self) -> None:
-        """Try to load the latest trained model for blending (cached per personality)."""
-        char_name = self.inner.personality.name if self.inner.personality else "Crimson"
-        if char_name in _LEARNED_MODEL_CACHE:
-            self._learned_model, self._policy_agent = _LEARNED_MODEL_CACHE[char_name]
+        """Load the newest usable policy for this character (cached, invalidated on change)."""
+        char_name = self.inner.personality.name if self.inner.personality else self.inner.name
+        path = resolve_learned_model(char_name, self.models_dir, self.registry_path)
+        if path == self._learned_model and (path is None or self._policy_agent is not None):
             return
-
+        self._learned_model, self._policy_agent = None, None
+        if path is None:
+            return
         try:
-            from backend.learning.league import ModelRegistry
             from backend.learning.policy_agent import PolicyAgent
-            reg = ModelRegistry()
-            live = reg.get_live_model(char_name)
-            if live and os.path.exists(live["file_path"]):
-                self._learned_model = live
-                self._policy_agent = PolicyAgent(
-                    char_name, model_path=live["file_path"], player=self.player
-                )
-                _LEARNED_MODEL_CACHE[char_name] = (self._learned_model, self._policy_agent)
-                return
-        except Exception:
-            pass
 
-        try:
-            from backend.data.learning import load_model
-            self._learned_model = load_model()
+            agent = PolicyAgent(char_name, model_path=path, player=self.player, use_registry=False)
+            if agent.model is not None:
+                self._learned_model, self._policy_agent = path, agent
         except Exception:
-            self._learned_model = None
-        _LEARNED_MODEL_CACHE[char_name] = (self._learned_model, self._policy_agent)
+            logger.warning("failed to load learned policy %s; using FSM only", path, exc_info=True)
 
     def reset(self) -> None:
         """Reset for a new round (preserves learned Q-table and opponent habit counts)."""
@@ -379,6 +513,7 @@ class DifficultyWrapper(Agent):
         self.current_profile = self.base_profile
         self.health_zone = "GREEN"
         self.delay = self.base_profile.reaction_delay
+        self.current_reaction_delay = self.delay
         self.mistake_chance = max(0.01, min(0.45, self.base_profile.mistake_chance + self._dda_mistake_offset))
         self.block_chance = self.base_profile.block_chance
         self.punish_chance = self.base_profile.punish_chance
@@ -391,9 +526,13 @@ class DifficultyWrapper(Agent):
         self._block_hold_frames = 0
         self._seen_enemy_stuck = False
         self._punish_decision_for_window = False
+        self._prev_can_attack = True
+        self._late_action, self._late_frames = None, 0
         if self.opp_model is not None:
             self.opp_model.reset()
         self.rl_learner.reset_round()
+        if self.use_learned_policy and self.difficulty in ("HIGH", "HELL"):
+            self._try_load_learned_model()
 
     def observe(self, state, my_action: Action, enemy_action: Action) -> None:
         """Called after every frame: updates inner agent, opponent model, and live Q-learner."""
@@ -419,10 +558,37 @@ class DifficultyWrapper(Agent):
         self.search_depth = prof.search_depth
         return prof
 
+    def _sample_delay(self, mean_delay: int, jitter: float) -> int:
+        """Human reaction time: a fresh sample around the mean (never below 1 frame)."""
+        if jitter <= 0:
+            return max(1, int(mean_delay))
+        return max(1, int(round(self.rng.gauss(mean_delay, jitter))))
+
+    def _execute(self, action: Action, prof: DifficultyProfile) -> Action:
+        """Human-like execution: occasionally drop an input or press it late."""
+        r = self.rng.random()
+        if r < prof.input_drop_chance:
+            self.dropped_inputs += 1
+            return Action.IDLE
+        if r < prof.input_drop_chance + prof.input_late_chance:
+            self.late_inputs += 1
+            self._late_action = action
+            self._late_frames = 1 + int(self.rng.random() * 3)
+            return Action.IDLE
+        return action
+
     def choose_action(self, obs):
         """Choose an action applying reaction delay, cadence, RL adaptation, and move diversity."""
         with self.stage("difficulty"):
             prof = self._apply_adrenaline(obs.my_health)
+
+            # A late input from a previous decision fires once its delay has passed.
+            if self._late_action is not None:
+                self._late_frames -= 1
+                if self._late_frames <= 0:
+                    late, self._late_action = self._late_action, None
+                    return late, self._last_scores
+                return Action.IDLE, self._last_scores
 
             # Check if the opponent is repeating a move/pattern so the AI adapts its focus
             spam_move, spam_intensity = self.rl_learner.detect_spam(obs)
@@ -430,43 +596,37 @@ class DifficultyWrapper(Agent):
             eff_punish_chance = min(0.96, prof.punish_chance + 0.55 * spam_intensity)
             eff_anti_air_chance = min(0.96, prof.anti_air_chance + 0.55 * spam_intensity)
             eff_hesitation = max(0.0, prof.hesitation * (1.0 - 0.75 * spam_intensity))
-            eff_delay = max(2, int(prof.reaction_delay * (1.0 - 0.45 * spam_intensity)))
+            mean_delay = max(1, int(prof.reaction_delay * (1.0 - 0.45 * spam_intensity)))
 
-            # 1. Push current observation into reaction buffer and fetch delayed observation
+            # 1. Reaction buffer: the AI acts on what it saw current_reaction_delay frames ago
             if len(self.obs_buffer) == 0:
-                for _ in range(eff_delay):
+                for _ in range(mean_delay):
                     self.obs_buffer.append(obs)
             self.obs_buffer.append(obs)
-            if len(self.obs_buffer) > eff_delay:
-                delayed_obs = self.obs_buffer[-eff_delay - 1]
-            else:
-                delayed_obs = self.obs_buffer[0]
+            d = min(self.current_reaction_delay, len(self.obs_buffer) - 1)
+            delayed_obs = self.obs_buffer[-d - 1]
 
             self._frame_counter += 1
             self.last_reaction_frames = None
 
-            # 2. Detect newly seen enemy attack in the delayed observation
-            enemy_attack_seen_now = (
-                (delayed_obs.enemy_is_attacking or obs.enemy_is_attacking) and obs.distance <= 165
-            )
+            # 2. A newly SEEN enemy attack (seen through the reaction delay)
+            enemy_attack_seen_now = delayed_obs.enemy_is_attacking and delayed_obs.distance <= 165
             just_saw_attack = enemy_attack_seen_now and not self._seen_enemy_attacking
             self._seen_enemy_attacking = enemy_attack_seen_now
 
             is_low_threat = (
                 delayed_obs.enemy_is_crouching
-                or obs.enemy_is_crouching
-                or delayed_obs.enemy_last_action in (
-                    Action.LOW_SWEEP, Action.CROUCH_JAB, Action.CROUCH_KICK
-                )
+                or delayed_obs.enemy_last_action in (Action.LOW_SWEEP, Action.CROUCH_JAB, Action.CROUCH_KICK)
                 or spam_move in (Action.LOW_SWEEP, Action.CROUCH_JAB, Action.CROUCH_KICK)
             )
 
             if just_saw_attack:
-                self.last_reaction_frames = max(1, eff_delay)
-                # Roll block_chance at the exact moment the observation sees the attack!
+                self.last_reaction_frames = self.current_reaction_delay
                 self._block_decision_for_attack = (self.rng.random() < eff_block_chance)
                 if self._block_decision_for_attack:
                     self._block_hold_frames = 12
+                # next reaction gets a fresh human reaction time
+                self.current_reaction_delay = self._sample_delay(mean_delay, prof.reaction_jitter)
 
             if self._block_hold_frames > 0:
                 self._block_hold_frames -= 1
@@ -477,16 +637,16 @@ class DifficultyWrapper(Agent):
                     self.rl_learner.record_decision(obs, blk)
                     return blk, self._last_scores
 
-            # 3. Detect newly seen enemy recovery (punish opportunity)
-            enemy_stuck_now = (delayed_obs.enemy_is_stuck or obs.enemy_is_stuck) and obs.distance <= 125
+            # 3. Newly seen enemy recovery (punish opportunity)
+            enemy_stuck_now = delayed_obs.enemy_is_stuck and delayed_obs.distance <= 125
             if enemy_stuck_now and not self._seen_enemy_stuck:
                 self._punish_decision_for_window = (self.rng.random() < eff_punish_chance)
             self._seen_enemy_stuck = enemy_stuck_now
 
-            just_recovered = obs.can_attack and not getattr(self, "_prev_can_attack", True)
+            just_recovered = obs.can_attack and not self._prev_can_attack
             self._prev_can_attack = obs.can_attack
 
-            # 4. Decision Cadence: only re-decide every N frames (unless reacting to a newly seen attack, recovery, or punish)
+            # 4. Decision cadence
             eff_cadence = max(2, int(prof.decides_every_n_frames * (1.0 - 0.35 * spam_intensity)))
             is_decision_tick = (
                 self._frame_counter == 1
@@ -499,6 +659,7 @@ class DifficultyWrapper(Agent):
                 if self._held_action in (Action.FORWARD, Action.BACK, Action.DASH, Action.BACKDASH, Action.CROUCH):
                     return self._held_action, self._last_scores
                 return Action.IDLE, self._last_scores
+            self.current_reaction_delay = self._sample_delay(mean_delay, prof.reaction_jitter)
 
             # 4.5 Rumble macro-action check (Zone retreat, Build cover, Smash walls, Loot)
             from backend.ai.rumble_ai import evaluate_rumble_macro
@@ -529,7 +690,7 @@ class DifficultyWrapper(Agent):
                 return Action.IDLE, {Action.IDLE: 1.0}
             scores = dict(raw_scores)
 
-            # 7. Apply Block Gate
+            # 7. Block gate
             if enemy_attack_seen_now and self._block_decision_for_attack and not obs.my_in_air:
                 blk = Action.BLOCK_LOW if is_low_threat else Action.BLOCK
                 scores[blk] = max(scores.values()) + 5.0
@@ -537,8 +698,8 @@ class DifficultyWrapper(Agent):
                 scores[Action.BLOCK] = 0.05
                 scores[Action.BLOCK_LOW] = 0.05
 
-            # 8. Apply Anti-Air Gate against jumping opponents
-            if (delayed_obs.enemy_in_air or obs.enemy_in_air) and obs.distance <= 110 and obs.can_attack and not obs.my_in_air:
+            # 8. Anti-air gate against jumping opponents
+            if delayed_obs.enemy_in_air and obs.distance <= 110 and obs.can_attack and not obs.my_in_air:
                 if self.rng.random() < eff_anti_air_chance:
                     top_s = max(scores.values())
                     scores[Action.ANTI_AIR] = top_s + 3.5
@@ -547,7 +708,7 @@ class DifficultyWrapper(Agent):
                 else:
                     scores[Action.ANTI_AIR] = 0.05
 
-            # 9. Apply Punish Gate when enemy is stuck — boost ALL viable in-range attacks proportionally!
+            # 9. Punish gate when enemy is stuck
             if enemy_stuck_now and obs.can_attack and not obs.my_in_air:
                 if self._punish_decision_for_window:
                     for atk in (
@@ -563,7 +724,7 @@ class DifficultyWrapper(Agent):
                         if atk in scores:
                             scores[atk] *= 0.08
 
-            # 10. Apply Combo Completion Gate when continuing a combo
+            # 10. Combo completion gate
             if obs.my_combo_count >= 1:
                 if self.rng.random() > prof.combo_completion:
                     for atk in ATTACKS:
@@ -571,7 +732,7 @@ class DifficultyWrapper(Agent):
                             scores[atk] = 0.05
                     scores[Action.IDLE] = 5.0
 
-            # 11. Apply Whiff Gate when out of range
+            # 11. Whiff gate when out of range
             out_of_melee_range = (not obs.i_can_hit) and (obs.distance > 125)
             if out_of_melee_range and obs.can_attack and not obs.my_in_air:
                 if self.rng.random() < prof.whiff_rate:
@@ -587,50 +748,87 @@ class DifficultyWrapper(Agent):
                         if melee_act in scores:
                             scores[melee_act] = 0.05
 
-            # 12. Opponent Model adjustments
+            # 12. Opponent model adjustments
             if self.use_opponent_model:
                 scores = self._apply_opponent_model(scores, delayed_obs, prof)
 
-            # 13. Blend in offline learned model suggestions (HIGH and HELL)
-            if self.use_learned_policy and self.difficulty in ("HIGH", "HELL") and self._learned_model is not None:
-                scores = self._blend_learned_scores(scores, delayed_obs)
+            must_consider = []
+            # 13. Learned policy (HIGH / HELL)
+            if self.use_learned_policy and self._policy_agent is not None and prof.policy_weight > 0:
+                scores, policy_top = self._blend_learned_scores(scores, delayed_obs, prof.policy_weight)
+                if policy_top is not None:
+                    must_consider.append(policy_top)
 
-            # 14. Apply Online Reinforcement Learning (Q-values + Anti-Spam Counters + Move Diversity Decay)
+            # 14. In-game search (HELL), hard time budget
+            if self.use_search and prof.search_depth >= 4 and delayed_obs.distance <= SEARCH_ENGAGE_DISTANCE:
+                best = self._run_search(scores, delayed_obs)
+                if best is not None and best in scores:
+                    scores[best] = max(scores.values()) * 1.15 + 0.5
+                    must_consider.append(best)
+
+            # 15. Online reinforcement learning (Q-values, anti-spam, diversity decay)
             scores, _ = self.rl_learner.adjust_scores(scores, delayed_obs, self.difficulty)
 
-            # 15. Probabilistic Move Selection Across All Viable Moves According to Their Chances
+            # 16. One pick with ONE mistake roll
             base_variety = self.inner.personality.variety if self.inner.personality else 0.25
             variety_scale = {"LOW": 1.15, "MEDIUM": 1.00, "HIGH": 0.85, "HELL": 0.75}[self.difficulty]
             effective_variety = min(0.65, max(0.24, base_variety * variety_scale))
 
-            # Filter candidate pool to viable high-scoring moves so variety samples across all good attacks
-            # without accidentally picking 0.05-score disabled moves
             max_s = max(scores.values()) if scores else 1.0
-            viable_threshold = max_s * 0.58
-            viable_scores = {
-                a: s for a, s in scores.items() if s >= viable_threshold and s > 0.1
-            }
+            viable_scores = {a: s for a, s in scores.items() if s >= max_s * 0.58 and s > 0.1}
+            for a in must_consider:
+                if a in scores:
+                    viable_scores[a] = scores[a]
             if len(viable_scores) < 2:
                 viable_scores = scores
 
             eff_mistake = max(0.0, self.mistake_chance * (1.0 - 0.65 * spam_intensity))
-            chosen = pick(
-                viable_scores,
-                self.rng,
-                variety=effective_variety,
-                mistake_chance=eff_mistake,
-            )
-
-            # When a mistake triggers on LOW/MEDIUM (and player isn't spamming), pick a suboptimal move
             if self.rng.random() < eff_mistake:
-                ordered = sorted(scores, key=lambda a: scores[a], reverse=True)
-                if len(ordered) >= 6:
-                    chosen = self.rng.choice(ordered[2:6])
+                # Human-like mistake: a clearly worse but still sensible move
+                ordered = [a for a in sorted(scores, key=lambda a: scores[a], reverse=True) if scores[a] > 0.1]
+                pool = ordered[1:5] if len(ordered) >= 3 else ordered[1:]
+                chosen = self.rng.choice(pool) if pool else pick(viable_scores, self.rng, variety=effective_variety)
+                self.mistakes_made += 1
+            else:
+                chosen = pick(viable_scores, self.rng, variety=effective_variety)
 
             self.rl_learner.record_decision(obs, chosen)
             self._held_action = chosen
             self._last_scores = scores
-            return chosen, scores
+            return self._execute(chosen, prof), scores
+
+    def _run_search(self, scores: Dict[Action, float], obs) -> Optional[Action]:
+        """Depth-1 simultaneous search over the top candidates (expectimax or minimax)."""
+        from backend.ai.search import simultaneous_search, state_from_observation
+
+        try:
+            candidates = [a for a in sorted(scores, key=lambda a: scores[a], reverse=True)
+                          if scores[a] > 0.1 and a.value < 27][:SEARCH_CANDIDATES]
+            if len(candidates) < 2:
+                return None
+            mode, probs = "minimax", None
+            om = self.opp_model
+            if (self.use_opponent_model and om is not None
+                    and om.total_predictions >= EXPECTIMAX_MIN_PREDICTIONS
+                    and om.accuracy >= EXPECTIMAX_MIN_ACCURACY):
+                mode, probs = "expectimax", om.predict_distribution(obs)
+            state = state_from_observation(obs, self.inner.name)
+            with self.stage("search"):
+                best, value, n, elapsed = simultaneous_search(
+                    state, 1, self.personality, candidates, enemy_probs=probs, mode=mode,
+                    budget_s=SEARCH_BUDGET_S,
+                )
+            self.search_calls += 1
+            if elapsed > SEARCH_BUDGET_S * 1.5:
+                self.search_over_budget += 1
+            self.last_search = {"mode": mode, "best": best, "value": value,
+                                "evaluated": n, "ms": elapsed * 1000.0}
+            return best
+        except Exception:
+            if self.strict:
+                raise
+            logger.warning("in-game search failed; continuing without it", exc_info=True)
+            return None
 
     def _apply_opponent_model(
         self, scores: Dict[Action, float], obs, prof: DifficultyProfile
@@ -657,7 +855,6 @@ class DifficultyWrapper(Agent):
 
         mult = 2.6 if prof.opponent_model == "live" else 1.8
         if predicted_action in DEFENCE:
-            # Enemy likes to block -> counter with throw, low sweep, crouch kick, or overhead
             if obs.distance <= 50 and Action.THROW in adjusted:
                 adjusted[Action.THROW] += mult * 1.2
             if Action.LOW_SWEEP in adjusted and obs.distance <= 88:
@@ -667,7 +864,6 @@ class DifficultyWrapper(Agent):
             if Action.OVERHEAD in adjusted and obs.distance <= 88:
                 adjusted[Action.OVERHEAD] += mult * 0.95
         elif predicted_action in (Action.LOW_SWEEP, Action.CROUCH_KICK, Action.CROUCH_JAB, Action.CROUCH):
-            # Enemy likes low attacks -> counter with overhead, jump attack, or low block
             if Action.OVERHEAD in adjusted and obs.distance <= 88:
                 adjusted[Action.OVERHEAD] += mult * 1.15
             if Action.JUMP_KICK in adjusted:
@@ -675,16 +871,13 @@ class DifficultyWrapper(Agent):
             if Action.BLOCK_LOW in adjusted and obs.distance <= 115:
                 adjusted[Action.BLOCK_LOW] += mult * 0.9
         elif predicted_action in (Action.JUMP, Action.JUMP_KICK, Action.JUMP_PUNCH):
-            # Enemy likes jumping -> counter with anti-air
             if Action.ANTI_AIR in adjusted and obs.distance <= 110:
                 adjusted[Action.ANTI_AIR] += mult * 1.3
         elif predicted_action in ATTACKS and obs.distance <= 110:
-            # Enemy about to attack -> boost fast counter-pokes, low sweep, or counter specials
             for fast_counter in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB, Action.LOW_SWEEP, Action.SPECIAL_DOWN, Action.SPECIAL_BACK):
                 if fast_counter in adjusted and obs.i_can_hit:
                     adjusted[fast_counter] += mult * 0.85
         elif predicted_action in (Action.BACK, Action.BACKDASH):
-            # Enemy retreating -> chase down with dash or forward
             if Action.DASH in adjusted:
                 adjusted[Action.DASH] += mult
             if Action.FORWARD in adjusted:
@@ -692,25 +885,31 @@ class DifficultyWrapper(Agent):
 
         return adjusted
 
-    def _blend_learned_scores(self, scores: Dict[Action, float], obs) -> Dict[Action, float]:
-        """Blend the inner agent's scores with the learned model's prediction."""
+    def _blend_learned_scores(self, scores: Dict[Action, float], obs, weight: float):
+        """Blend FSM scores with the policy's action distribution.
+
+        final[a] = max_s * ((1 - w) * fsm[a] / max_s + w * p[a] / max_p)
+        so at HELL (w=0.7) the policy dominates the ranking, while the FSM's
+        reactive gates (block/punish/anti-air boosts above) still shape it.
+        Returns (blended_scores, policy_argmax) -- the argmax is always kept
+        in the candidate pool so the viability filter cannot drop it.
+        """
         try:
-            if self._policy_agent is not None:
-                pred_action, _ = self._policy_agent.choose_action(obs)
-                blended = dict(scores)
-                if pred_action in blended:
-                    max_score = max(blended.values())
-                    blended[pred_action] += max_score * 0.3
-                return blended
-
-            from backend.data.learning import predict_action
-            predicted = predict_action(self._learned_model, obs.features())
-
-            BLEND_WEIGHT = 0.3
-            blended = dict(scores)
-            if predicted in blended:
-                max_score = max(blended.values())
-                blended[predicted] += max_score * BLEND_WEIGHT
-            return blended
+            probs = self._policy_agent.suggest(obs)
         except Exception:
-            return scores
+            if self.strict:
+                raise
+            logger.warning("policy inference failed; using FSM scores", exc_info=True)
+            return scores, None
+        if probs is None or probs.max() <= 0:
+            return scores, None
+        max_s = max(scores.values()) or 1.0
+        max_p = float(probs.max())
+        blended = {}
+        for a, s in scores.items():
+            p = float(probs[a.value]) if a.value < len(probs) else 0.0
+            blended[a] = max_s * ((1.0 - weight) * (s / max_s) + weight * (p / max_p))
+        top = ALL_ACTIONS[int(probs.argmax())]
+        if top not in blended:
+            blended[top] = max_s * weight
+        return blended, top

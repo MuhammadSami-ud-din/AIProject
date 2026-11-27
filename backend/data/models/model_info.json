@@ -1,10 +1,15 @@
 {
-  "current": "20261118_110125",
+  "current": "20261127_001123",
   "versions": [
     {
       "version": "20261118_110125",
       "timestamp": "2026-11-18T11:01:30.485458",
       "path": "C:\\Users\\Muhammad Abdul Wahid\\PycharmProjects\\AIProject\\backend\\data\\..\\data\\models\\model_20261118_110125.pkl"
+    },
+    {
+      "version": "20261127_001123",
+      "timestamp": "2026-11-27T00:11:24.527782",
+      "path": "/Users/apple/Abdulrepo/AIProject/backend/data/../data/models/model_20261127_001123.pkl"
     }
   ]
 }

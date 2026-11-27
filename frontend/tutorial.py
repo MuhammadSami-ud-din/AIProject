@@ -22,7 +22,7 @@ from frontend.audio import audio
 from frontend.camera_effects import CameraState
 from frontend.draw_fighter import draw_fighter
 from frontend.hud import draw_hud
-from frontend.input_handler import DEFAULT_KEY_BINDINGS, InputHandler, get_human_action
+from frontend.input_handler import DEFAULT_KEY_BINDINGS, InputHandler, current_bindings, get_human_action  # noqa: F401
 from frontend.fantasy_ui import draw_obsidian_card, GOLD_TEXT, GOLD_BRIGHT, PANEL_BORDER_GLOW, TEXT_WHITE, TEXT_MUTED
 from frontend.theme import (
     BLACK,
@@ -160,7 +160,9 @@ LESSONS = [
 ]
 
 
-def _format_key(k: int) -> str:
+def _format_key(k) -> str:
+    if not isinstance(k, int):  # a binding may hold several keys; show the first
+        k = list(k)[0] if k else 0
     name = pygame.key.name(k).upper()
     return name if name else str(k)
 
@@ -364,7 +366,7 @@ def run_tutorial(
         # --------------------------------------------------------------
         # Overlay Panel 3: Key Controls Reference Panel (Top Right)
         # --------------------------------------------------------------
-        b = DEFAULT_KEY_BINDINGS
+        b = current_bindings()
         ctrl_rect = pygame.Rect(SCREEN_WIDTH - 280, 115, 260, 220)
         draw_obsidian_card(surface, ctrl_rect, is_selected=False, border_radius=8)
 

@@ -1,0 +1,161 @@
+{
+  "_note": "Produced by real runs on 2026-11-27: bc CLI (24 demo rounds, 12 epochs) -> ppo CLI (80 updates, 4 envs x 128 macro-steps, league opponents, BC warm start) -> league CLI promotion gate (24 matches vs full pool). Commands in docs/learning_phase7.md.",
+  "characters": {
+    "crimson": {
+      "bc": {
+        "test_accuracy": 0.5771812080536913,
+        "majority_class_baseline": 0.3825503355704698,
+        "critic_explained_variance": 0.05480170249938965,
+        "expert_round_win_rate": 0.8333333333333334,
+        "train_samples": 1378,
+        "test_samples": 149
+      },
+      "ppo": {
+        "updates": 80,
+        "total_steps": 40960,
+        "seconds": 290.5,
+        "final_league_elo": 1041.0111507825475,
+        "final_curriculum_tier": 3,
+        "training_win_rate_last10_updates": 0.489047619047619,
+        "checkpoints": [
+          "models/crimson/v009.pt",
+          "models/crimson/v010.pt",
+          "models/crimson/v011.pt",
+          "models/crimson/v012.pt"
+        ]
+      },
+      "promotion_gate": {
+        "result": "ROLLED_BACK: Failed win rate threshold (46% < 55%); Failed style constraint check",
+        "checkpoint": "models/crimson/v012.pt",
+        "win_rate": 0.4583333333333333,
+        "wins": 11.0,
+        "matches": 24.0,
+        "passed_win_rate": false,
+        "passed_style": false,
+        "aggression": 0.16041453227204666,
+        "defense": 1.418551501300339,
+        "avg_distance": 159.8561991826437,
+        "damage_per_minute": 232.47789423910476,
+        "action_entropy": 4.5508506868972205,
+        "tournament_elo": 953.4336894786234
+      }
+    },
+    "steel": {
+      "bc": {
+        "test_accuracy": 0.46601941747572817,
+        "majority_class_baseline": 0.20388349514563106,
+        "critic_explained_variance": -0.2286592721939087,
+        "expert_round_win_rate": 1.0,
+        "train_samples": 2438,
+        "test_samples": 206
+      },
+      "ppo": {
+        "updates": 80,
+        "total_steps": 40960,
+        "seconds": 216.9,
+        "final_league_elo": 1458.7979144062724,
+        "final_curriculum_tier": 3,
+        "training_win_rate_last10_updates": 0.9454365079365079,
+        "checkpoints": [
+          "models/steel/v007.pt",
+          "models/steel/v008.pt",
+          "models/steel/v009.pt",
+          "models/steel/v010.pt"
+        ]
+      },
+      "promotion_gate": {
+        "result": "PROMOTED to Live Roster!",
+        "checkpoint": "models/steel/v010.pt",
+        "win_rate": 1.0,
+        "wins": 24.0,
+        "matches": 24.0,
+        "passed_win_rate": true,
+        "passed_style": true,
+        "aggression": 0.17383269680916594,
+        "defense": 1.1087840335099175,
+        "avg_distance": 144.2594778155198,
+        "damage_per_minute": 532.2163360847604,
+        "action_entropy": 3.102093728959615,
+        "tournament_elo": 1245.0110893132662
+      }
+    },
+    "shadow": {
+      "bc": {
+        "test_accuracy": 0.4855072463768116,
+        "majority_class_baseline": 0.30434782608695654,
+        "critic_explained_variance": -0.001276850700378418,
+        "expert_round_win_rate": 0.875,
+        "train_samples": 1916,
+        "test_samples": 138
+      },
+      "ppo": {
+        "updates": 80,
+        "total_steps": 40960,
+        "seconds": 279.6,
+        "final_league_elo": 1332.156313496146,
+        "final_curriculum_tier": 3,
+        "training_win_rate_last10_updates": 0.7599175824175824,
+        "checkpoints": [
+          "models/shadow/v007.pt",
+          "models/shadow/v008.pt",
+          "models/shadow/v009.pt",
+          "models/shadow/v010.pt"
+        ]
+      },
+      "promotion_gate": {
+        "result": "PROMOTED to Live Roster!",
+        "checkpoint": "models/shadow/v010.pt",
+        "win_rate": 0.9583333333333334,
+        "wins": 23.0,
+        "matches": 24.0,
+        "passed_win_rate": true,
+        "passed_style": true,
+        "aggression": 0.18000812677773262,
+        "defense": 0.0,
+        "avg_distance": 163.5195971440174,
+        "damage_per_minute": 438.79114181227146,
+        "action_entropy": 2.2257305321458936,
+        "tournament_elo": 1230.273430519603
+      }
+    },
+    "golden": {
+      "bc": {
+        "test_accuracy": 0.576271186440678,
+        "majority_class_baseline": 0.3050847457627119,
+        "critic_explained_variance": 0.026998698711395264,
+        "expert_round_win_rate": 0.9166666666666666,
+        "train_samples": 1922,
+        "test_samples": 118
+      },
+      "ppo": {
+        "updates": 80,
+        "total_steps": 40960,
+        "seconds": 318.3,
+        "final_league_elo": 748.537814635119,
+        "final_curriculum_tier": 3,
+        "training_win_rate_last10_updates": 0.24500000000000002,
+        "checkpoints": [
+          "models/golden/v007.pt",
+          "models/golden/v008.pt",
+          "models/golden/v009.pt",
+          "models/golden/v010.pt"
+        ]
+      },
+      "promotion_gate": {
+        "result": "ROLLED_BACK: Failed win rate threshold (33% < 55%); Failed style constraint check",
+        "checkpoint": "models/golden/v010.pt",
+        "win_rate": 0.3333333333333333,
+        "wins": 8.0,
+        "matches": 24.0,
+        "passed_win_rate": false,
+        "passed_style": false,
+        "aggression": 0.10440504726154402,
+        "defense": 1.3025191081362217,
+        "avg_distance": 247.81191313955165,
+        "damage_per_minute": 130.2852553027905,
+        "action_entropy": 3.7594718188815546,
+        "tournament_elo": 944.9379423756321
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "version": 8,
+  "obs_dim": 96,
+  "action_dim": 27,
+  "timestamp": 1795720328.0869691,
+  "type": "ppo",
+  "personality": "Shadow",
+  "update": 50,
+  "total_steps": 25600,
+  "git_commit": "211e3c1",
+  "seed": 42,
+  "warm_start": "/Users/apple/Abdulrepo/AIProject/models/shadow/bc_model.pt",
+  "league_elo": 1139.1476479283008,
+  "recent_training_win_rate": 0.44198412698412703,
+  "latest_metrics": {
+    "update": 50,
+    "total_steps": 25600,
+    "mean_reward": 0.44707661867141724,
+    "episodes_finished": 9,
+    "mean_episode_return": 29.901111111111106,
+    "episode_win_rate": 0.6666666666666666,
+    "policy_loss": 0.001443084969650954,
+    "value_loss": 211.70928144454956,
+    "entropy": 1.2850737646222115,
+    "clipfrac": 0.18115234375,
+    "approx_kl": 0.022837217162305024,
+    "elapsed_time": 173.1703062057495,
+    "league_elo": 1139.1476479283008,
+    "curriculum_tier": 2
+  }
+}

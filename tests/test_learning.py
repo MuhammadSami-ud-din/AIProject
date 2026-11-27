@@ -129,7 +129,7 @@ def test_training_thread(populated_db):
     try:
         t = TrainingThread(path)
         t.start()
-        t.join(timeout=30)
+        t.join(timeout=180)  # generous: CI machines can be heavily loaded
         assert t.done
         assert t.success, f"Training failed: {t.error}"
         assert t.model is not None

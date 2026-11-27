@@ -1,124 +1,129 @@
-"""Monte Carlo Tree Search for Hell mode.
+"""Monte Carlo Tree Search (open-loop UCT) with a hard time budget.
 
-MCTS explores many possible futures by playing random rollouts
-from each candidate move. The move with the best average outcome
-wins. Faster than deep minimax, and handles simultaneous actions
-better because it does not assume worst-case.
+This is a real UCT tree, not flat Monte-Carlo:
+  * Each node is a sequence of OUR macro-actions (one ply = FRAMES_PER_PLY
+    frames, sustained moves held, attacks pressed on the first frame).
+  * Selection uses UCB1 (exploration constant C), expansion adds one untried
+    action per iteration, the rollout continues with random macro-actions up
+    to ROLLOUT_PLIES plies, and the evaluation is back-propagated.
+  * The opponent is modelled as a random macro-action per ply ("open-loop"
+    MCTS for a simultaneous-move game), so the tree branches only on our moves.
+  * The time budget is enforced before every iteration; the first iteration
+    always runs so a move is always returned.
 
-How it works:
-  1. For each legal action, simulate several random rollouts.
-  2. Each rollout plays N frames with random moves for both sides.
-  3. Score the final state using the evaluation function.
-  4. Pick the action whose rollouts scored best on average.
+Honest scope: one iteration costs ~0.5-1 ms of engine simulation in Python, so
+a 4 ms budget only allows a handful of iterations. MCTS is therefore NOT used
+by the in-game difficulty wrapper (HELL uses the cheaper depth-1 simultaneous
+search in ``backend.ai.search``). It is kept as an analysis tool and for
+experiments with larger budgets.
 """
 
+import math
 import time
 
-from backend.ai.actions import ALL_ACTIONS, Action
+from backend.ai.actions import ATTACKS, Action
 from backend.ai.adapter import observation_for
 from backend.ai.evaluation import evaluate
 from backend.engine.step import step
 
-
-# How many frames each rollout simulates
-ROLLOUT_DEPTH = 18          # about 0.3 seconds of game time
-
-# Time budget for the entire MCTS search
+FRAMES_PER_PLY = 6
+ROLLOUT_PLIES = 3            # total plies simulated per iteration (tree + rollout)
+UCB_C = 1.4
 MCTS_BUDGET_MS = 4
 MCTS_BUDGET_S = MCTS_BUDGET_MS / 1000
+MIN_ROLLOUTS = 1             # kept for backwards compatibility
 
-# Minimum rollouts per action before we stop early
-MIN_ROLLOUTS = 2
+# Tactical subset searched by MCTS (keeps the branching factor manageable).
+CANDIDATES = (
+    Action.IDLE, Action.FORWARD, Action.BACK, Action.DASH, Action.BACKDASH, Action.JUMP,
+    Action.BLOCK, Action.BLOCK_LOW, Action.LIGHT, Action.HEAVY, Action.LOW_SWEEP,
+    Action.THROW, Action.ANTI_AIR, Action.SPECIAL_NEUTRAL, Action.SPECIAL_FORWARD,
+)
+ENEMY_MOVES = (Action.IDLE, Action.FORWARD, Action.BACK, Action.BLOCK, Action.LIGHT,
+               Action.HEAVY, Action.LOW_SWEEP, Action.JUMP)
+_SUSTAINED = (Action.FORWARD, Action.BACK, Action.DASH, Action.CROUCH, Action.BLOCK, Action.BLOCK_LOW)
 
 
-def mcts_best_action(state, player, personality, rng,
-                     budget_s=MCTS_BUDGET_S):
-    """Find the best action using Monte Carlo rollouts.
+class _Node:
+    __slots__ = ("children", "visits", "value", "untried")
 
-    state: the current FightState.
-    player: 1 or 2.
-    personality: for evaluation.
-    rng: random generator for rollouts.
-    budget_s: time budget in seconds.
+    def __init__(self, actions):
+        self.children = {}
+        self.visits = 0
+        self.value = 0.0
+        self.untried = list(actions)
 
-    Returns (best_action, best_score, rollouts_done).
+    def ucb_child(self):
+        log_n = math.log(max(1, self.visits))
+        best, best_score = None, float("-inf")
+        for action, child in self.children.items():
+            score = child.value / child.visits + UCB_C * math.sqrt(log_n / child.visits)
+            if score > best_score:
+                best, best_score = action, score
+        return best
+
+
+def _ply(state, player, my_action, enemy_action):
+    current = state
+    for i in range(FRAMES_PER_PLY):
+        if current.round_over or current.match_over:
+            break
+        mine = my_action if (i == 0 or my_action in _SUSTAINED) else Action.IDLE
+        theirs = enemy_action if (i == 0 or enemy_action in _SUSTAINED) else Action.IDLE
+        current = step(current, mine, theirs) if player == 1 else step(current, theirs, mine)
+    return current
+
+
+def mcts_best_action(state, player, personality, rng, budget_s=MCTS_BUDGET_S):
+    """Search with UCT for ``budget_s`` seconds.
+
+    Returns (best_action, mean_value_of_best, iterations).
     """
     start = time.perf_counter()
     obs = observation_for(state, player)
-    available = _available_actions(obs)
+    root_actions = _available_actions(obs)
+    if len(root_actions) == 1:
+        return root_actions[0], 0.0, 0
 
-    if len(available) == 1:
-        return available[0], 0.0, 0
+    # Normalise evaluations to roughly [-1, 1] for UCB.
+    scale = 100.0
+    root = _Node(root_actions)
+    iterations = 0
+    while iterations == 0 or (time.perf_counter() - start) < budget_s:
+        node, path = root, [root]
+        current = state.copy()
+        depth = 0
+        # Selection
+        while not node.untried and node.children and depth < ROLLOUT_PLIES:
+            action = node.ucb_child()
+            current = _ply(current, player, action, rng.choice(ENEMY_MOVES))
+            node = node.children[action]
+            path.append(node)
+            depth += 1
+        # Expansion
+        if node.untried and depth < ROLLOUT_PLIES and not (current.round_over or current.match_over):
+            action = node.untried.pop(rng.randrange(len(node.untried)))
+            current = _ply(current, player, action, rng.choice(ENEMY_MOVES))
+            child = _Node(CANDIDATES)
+            node.children[action] = child
+            node = child
+            path.append(node)
+            depth += 1
+        # Rollout
+        while depth < ROLLOUT_PLIES and not (current.round_over or current.match_over):
+            current = _ply(current, player, rng.choice(CANDIDATES), rng.choice(ENEMY_MOVES))
+            depth += 1
+        value = _eval_state(current, player, personality) / scale
+        for n in path:
+            n.visits += 1
+            n.value += value
+        iterations += 1
 
-    # Track scores for each action
-    total_score = {a: 0.0 for a in available}
-    count = {a: 0 for a in available}
-    total_rollouts = 0
-
-    # Round-robin: give each action at least MIN_ROLLOUTS
-    while True:
-        for action in available:
-            elapsed = time.perf_counter() - start
-            if elapsed >= budget_s and count[action] >= MIN_ROLLOUTS:
-                # Over budget and we have enough data
-                break
-
-            # Run one rollout from this action
-            score = _rollout(state, player, action, personality, rng)
-            total_score[action] += score
-            count[action] += 1
-            total_rollouts += 1
-        else:
-            # If we haven't gone over budget, keep going
-            if time.perf_counter() - start < budget_s:
-                continue
-        break
-
-    # Pick the action with the best average score
-    best_action = available[0]
-    best_avg = float("-inf")
-    for action in available:
-        if count[action] > 0:
-            avg = total_score[action] / count[action]
-            if avg > best_avg:
-                best_avg = avg
-                best_action = action
-
-    return best_action, best_avg, total_rollouts
-
-
-def _rollout(state, player, first_action, personality, rng):
-    """Simulate one random rollout from a starting action.
-
-    Plays ROLLOUT_DEPTH frames with the first action for our player,
-    then random actions for both sides. Returns the evaluation score
-    of the final state.
-    """
-    current = state.copy()
-    all_acts = list(ALL_ACTIONS)
-
-    for frame in range(ROLLOUT_DEPTH):
-        if current.round_over or current.match_over:
-            break
-
-        # Our action: use the specified first_action for frame 0,
-        # then pick random moves
-        if frame == 0:
-            my_action = first_action
-        else:
-            my_action = rng.choice(all_acts)
-
-        # Enemy action: always random in rollouts
-        enemy_action = rng.choice(all_acts)
-
-        # Apply the actions to the engine
-        if player == 1:
-            current = step(current, my_action, enemy_action)
-        else:
-            current = step(current, enemy_action, my_action)
-
-    # Evaluate the final state
-    return _eval_state(current, player, personality)
+    best_action, best_visits, best_mean = root_actions[0], -1, 0.0
+    for action, child in root.children.items():
+        if child.visits > best_visits:
+            best_action, best_visits, best_mean = action, child.visits, child.value / child.visits
+    return best_action, float(best_mean * scale), iterations
 
 
 def _eval_state(state, player, personality):
@@ -128,27 +133,21 @@ def _eval_state(state, player, personality):
         enemy_result = "p2" if player == 1 else "p1"
         if state.round_result == my_result:
             return 100.0
-        elif state.round_result == enemy_result:
+        if state.round_result == enemy_result:
             return -100.0
-        else:
-            return 0.0
-
+        return 0.0
     obs = observation_for(state, player)
     score, _ = evaluate(obs, personality)
-    return score
+    return float(score)
 
 
 def _available_actions(obs):
-    """Return legal actions for this frame."""
+    """Legal root actions from the tactical candidate set."""
     available = []
-    for action in ALL_ACTIONS:
-        if action in (Action.LIGHT, Action.HEAVY):
-            if not obs.can_attack:
-                continue
-        if action == Action.BLOCK and obs.my_in_air:
+    for action in CANDIDATES:
+        if action in ATTACKS and (not obs.can_attack or obs.my_in_air):
+            continue
+        if action in (Action.BLOCK, Action.BLOCK_LOW, Action.DASH, Action.BACKDASH) and obs.my_in_air:
             continue
         available.append(action)
-
-    if not available:
-        available = [Action.IDLE]
-    return available
+    return available or [Action.IDLE]

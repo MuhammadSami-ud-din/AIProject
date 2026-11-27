@@ -6,8 +6,8 @@ Phase 1 encapsulates the headless deterministic combat engine into a standard Gy
 ## Key Features
 
 1. **Gymnasium Interface (`ArenaEnv`)**:
-   - `reset(seed)`: Initializes a deterministic match, returning a 30-element float32 observation vector (`Observation.features()`) and an `info` dictionary containing the legal `action_mask`.
-   - `step(action)`: Accepts a macro-action index (0 to 26), applies the action, and advances the simulation forward until the agent is actionable again or the round concludes. Returns `(obs, reward, terminated, truncated, info)`.
+   - `reset(seed)`: Initializes a deterministic match, returning a 96-element float32 policy vector (`backend/learning/features.py::policy_vector`) and an `info` dictionary containing the legal `action_mask`. The vector holds the 28 numeric base features, one-hot encodings of my/the enemy's last action (raw ids 0..26 are categorical, not magnitudes), one-hot attack phase (none/startup/active/recovery) for both fighters, and the exact action-mask inputs (thrown, guard-break stun, burst used, jump frame). `Observation.features()` (30 values) remains the fight-log / sklearn format.
+   - `step(action)`: Accepts a macro-action index (0 to 26), applies the action, and advances the simulation forward until the agent is actionable again (at least `ACTION_EXECUTION_FRAMES`=6 frames, at most 30) or the round concludes. Movement/guard actions are held for the whole macro-step; attacks are pressed on the first frame (`macro_frame_action` / `macro_step_done`, shared with `PolicyAgent` so gameplay uses the same granularity). Every simulated frame is passed to `RewardCalculator.observe_frame` so one-frame engine events are never missed. A round ending is `terminated`; hitting the frame limit without a decided round is `truncated` (PPO bootstraps it). Returns `(obs, reward, terminated, truncated, info)`.
 
 2. **Action Masking**:
    - Computes a boolean mask of legal actions (`(27,)`) at every step:
@@ -20,7 +20,7 @@ Phase 1 encapsulates the headless deterministic combat engine into a standard Gy
    - The policy never executes an illegal move.
 
 3. **Pluggable Opponents & Determinism**:
-   - The opponent can be any `Agent`: `RandomAgent`, rule-based FSMs (`CrimsonAgent`, `SteelAgent`, etc.), search agents, or another learned neural policy.
+   - The opponent can be any `Agent`: `RandomAgent`, rule-based FSMs (`CrimsonAgent`, `SteelAgent`, etc.), difficulty-wrapped FSMs, or another learned neural policy. `env.set_opponent(agent, character)` swaps it between episodes (used by league sampling).
    - Fully reproducible: identical seeds produce bit-identical fight trajectories.
 
 ## Verification

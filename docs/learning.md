@@ -5,6 +5,12 @@
 Trains a RandomForestClassifier to predict the best action
 from observation features, learning from winning fighters' logged matches.
 
+> **Status:** this RandomForest model is a standalone M8 experiment. It is no
+> longer blended into HIGH/HELL decisions: one prediction took ~20 ms (joblib
+> overhead), above the 16.7 ms frame budget. In-game learned behaviour now comes
+> from the PyTorch BC → PPO pipeline in `backend/learning/` (see
+> `learning_phase1.md` … `learning_phase7.md`).
+
 ## Key Rules
 
 1. **Split by match:** Frames from one match never appear in

@@ -1,8 +1,18 @@
 """Attack logic: starting moves, phase advance, hit/block detection, high/low rules, throws, cancels."""
 
 from backend.ai.actions import Action
+from backend.engine.constants import (
+    AIR_HURTBOX_HEIGHT,
+    CROUCH_HURTBOX_HEIGHT,
+    FURY_SUPER_COST,
+    GOLDEN_EVADE_EXTRA_INVULN,
+    STAND_HURTBOX_HEIGHT,
+)
 from backend.engine.moves import CancelType, HitLevel, MoveData, get_move
+from backend.engine.pushbox import pushbox_half_width
 from backend.engine.state import FighterState
+
+GOLDEN_STANCES = ("rush", "guard", "evade")
 
 
 def can_act(fighter: FighterState) -> bool:
@@ -68,18 +78,20 @@ def start_attack(fighter: FighterState, move: MoveData) -> bool:
     # Check meter cost (Super costs 60 in Fury, 100 normally)
     meter_cost = move.meter_cost
     if move.action == Action.SUPER and fighter.is_fury:
-        meter_cost = min(60.0, meter_cost)
+        meter_cost = min(FURY_SUPER_COST, meter_cost)
 
     if meter_cost > 0.0:
         if fighter.meter < meter_cost:
             return False
         fighter.meter -= meter_cost
 
-    # Stance handling for Golden Tactician (cycles rush -> guard -> evade -> rush)
+    # Stance handling for Golden Tactician (cycles rush -> guard -> evade -> rush).
+    # Effects: see step.py (rush = more damage, guard = less chip/guard drain,
+    # evade = faster walk and longer invulnerability on evasive moves).
     if fighter.character_name == "Golden" and move.action == Action.SPECIAL_DOWN:
-        stances = ["rush", "guard", "evade"]
-        idx = (stances.index(fighter.stance) + 1) % len(stances) if fighter.stance in stances else 0
-        fighter.stance = stances[idx]
+        idx = ((GOLDEN_STANCES.index(fighter.stance) + 1) % len(GOLDEN_STANCES)
+               if fighter.stance in GOLDEN_STANCES else 0)
+        fighter.stance = GOLDEN_STANCES[idx]
 
     # Counter stance
     fighter.counter_stance = move.is_counter_stance
@@ -93,7 +105,9 @@ def start_attack(fighter: FighterState, move: MoveData) -> bool:
 
     # Handle invulnerability (e.g. backdash first 4 frames, shadow step)
     if move.invulnerable_frames > 0:
-        fighter.invulnerable_frames = move.invulnerable_frames
+        extra = GOLDEN_EVADE_EXTRA_INVULN if (
+            fighter.character_name == "Golden" and fighter.stance == "evade") else 0
+        fighter.invulnerable_frames = move.invulnerable_frames + extra
 
     # Clear previous cancel availability
     fighter.cancel_available = False
@@ -133,10 +147,12 @@ def advance_attack(fighter: FighterState, move: MoveData | None) -> None:
             fighter.attack_frames_left = move.active
 
         elif fighter.attack_phase == "active":
+            # This frame is the first recovery frame (attack_frames_left counts it);
+            # the recovery/cooldown timers count the frames AFTER this one.
             fighter.attack_phase = "recovery"
             fighter.attack_frames_left = move.recovery
-            fighter.recovery = move.recovery
-            fighter.cooldown = move.recovery
+            fighter.recovery = max(0, move.recovery - 1)
+            fighter.cooldown = max(0, move.recovery - 1)
             fighter.counter_stance = False
 
         elif fighter.attack_phase == "recovery":
@@ -148,14 +164,26 @@ def advance_attack(fighter: FighterState, move: MoveData | None) -> None:
             fighter.counter_stance = False
 
 
+def is_busy_with_own_move(fighter: FighterState) -> bool:
+    """True while the fighter is committed to their own move (startup/active/recovery)."""
+    return fighter.attack_phase != "none" or fighter.recovery > 0
+
+
 def is_guarding(defender: FighterState, defender_action: Action, hit_level: HitLevel) -> bool:
-    """Check if the defender successfully blocks an incoming hit based on hit level."""
+    """Check if the defender successfully blocks an incoming hit based on hit level.
+
+    `defender_action` is the defender's input on THIS frame (melee and projectiles alike).
+    """
     # Cannot block in the air
     if defender.in_air:
         return False
 
     # Cannot block while stunned, knocked down, or grabbed
     if defender.hitstun > 0 or defender.is_knocked_down or defender.is_thrown:
+        return False
+
+    # Cannot block during your own move's startup, active or recovery frames
+    if is_busy_with_own_move(defender):
         return False
 
     # Throws cannot be blocked
@@ -195,6 +223,39 @@ def is_guarding(defender: FighterState, defender_action: Action, hit_level: HitL
     return False
 
 
+# ---------------------------------------------------------------
+# Vertical axis: hurtboxes and hitboxes
+# ---------------------------------------------------------------
+
+def hurtbox_range(fighter: FighterState) -> tuple[float, float]:
+    """Vertical extent (bottom, top) of the fighter's body in px above the floor."""
+    if fighter.in_air:
+        y = fighter.y
+        return (y, y + AIR_HURTBOX_HEIGHT)
+    if fighter.is_crouching:
+        return (0.0, CROUCH_HURTBOX_HEIGHT)
+    return (0.0, STAND_HURTBOX_HEIGHT)
+
+
+def hitbox_range(attacker: FighterState, move: MoveData) -> tuple[float, float]:
+    """Vertical extent of the move's hitbox in px above the floor."""
+    lo, hi = move.vertical_range
+    y = attacker.y
+    return (y + lo, y + hi)
+
+
+def ranges_overlap(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+def is_anti_air_active(fighter: FighterState) -> bool:
+    """True while the fighter's anti-air move beats incoming air attacks."""
+    if fighter.attack_phase not in ("startup", "active"):
+        return False
+    move = get_move(fighter.character_name, fighter.current_action)
+    return move is not None and move.anti_air
+
+
 def check_hit(attacker: FighterState, defender: FighterState, move: MoveData) -> bool:
     """Return True if the attacker's hit connects this frame."""
     if attacker.attack_phase != "active":
@@ -202,15 +263,25 @@ def check_hit(attacker: FighterState, defender: FighterState, move: MoveData) ->
     if attacker.has_hit:
         return False
 
+    # Utility moves (backdash, stance, teleport, feint) have no hitbox
+    if move.damage <= 0.0:
+        return False
+
     # Invulnerable opponents cannot be hit
     if defender.invulnerable_frames > 0 or defender.is_knocked_down:
         return False
 
-    # Check distance reach (accounting for defender's physical hurtbox radius)
-    from backend.engine.pushbox import pushbox_half_width
+    # Horizontal reach (accounting for defender's physical hurtbox radius)
     distance = abs(attacker.x - defender.x)
-    hurtbox_radius = pushbox_half_width(defender)
-    if distance > (move.reach + hurtbox_radius):
+    if distance > (move.reach + pushbox_half_width(defender)):
+        return False
+
+    # Vertical: the hitbox must overlap the defender's hurtbox
+    if not ranges_overlap(hitbox_range(attacker, move), hurtbox_range(defender)):
+        return False
+
+    # Anti-airs beat air attacks
+    if move.is_air and is_anti_air_active(defender):
         return False
 
     # Throw specifics:
@@ -218,9 +289,16 @@ def check_hit(attacker: FighterState, defender: FighterState, move: MoveData) ->
         # Throws miss airborne opponents
         if defender.in_air:
             return False
-        # Normal throw loses to attack startup; command grabs beat normal attacks
-        if move.action == Action.THROW and defender.attack_phase in ("startup", "active"):
+        # Throw invulnerability: wakeup, during and just after hit/blockstun
+        if (defender.throw_invuln_frames > 0 or defender.hitstun > 0
+                or defender.blockstun > 0 or defender.is_thrown):
             return False
+        # Normal throw loses to attack startup; command grabs beat normal attacks.
+        # Throw vs throw connects for both and becomes a clash (see step.py).
+        if move.action == Action.THROW and defender.attack_phase in ("startup", "active"):
+            defender_move = get_move(defender.character_name, defender.current_action)
+            if defender_move is None or defender_move.hit_level != HitLevel.THROW:
+                return False
 
     return True
 

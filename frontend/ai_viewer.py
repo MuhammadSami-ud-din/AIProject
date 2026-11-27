@@ -437,7 +437,8 @@ def run_ai_viewer(surface: pygame.Surface, clock: pygame.time.Clock,
 
             for f in (state.fighter1, state.fighter2):
                 effect = getattr(f, "last_hit_effect", "none")
-                if effect != "none":
+                # "hit"/"block" fire on every plain hit; only label special events.
+                if effect not in ("none", "hit", "block"):
                     fx = ARENA_OFFSET_X + int(f.x)
                     fy = floor_y - 98
                     colors = {

@@ -67,28 +67,33 @@ Parameters: α=0.1, γ=0.95, ε decays 0.999× per episode.
 
 ## MCTS (`backend/ai/mcts.py`)
 
-Monte Carlo Tree Search for Hell mode.
+Open-loop **UCT** tree search (a real tree, not flat Monte-Carlo):
 
-### How it works
-1. For each legal action, simulate several **random rollouts**.
-2. Each rollout plays 18 frames with random moves.
-3. Score the final state with the evaluation function.
-4. Pick the action whose rollouts scored best on average.
+1. Nodes are sequences of our macro-actions (one ply = 6 frames; movement held,
+   attacks pressed on the first frame), drawn from a 15-action tactical subset.
+2. **Selection** with UCB1 (C = 1.4), **expansion** of one untried action per
+   iteration, **rollout** with random macro-actions up to 3 plies, evaluation
+   with the personality evaluation function, **back-propagation**.
+3. The opponent plays a random macro-action per ply (open-loop MCTS for a
+   simultaneous-move game).
+4. The time budget is checked before every iteration (the first always runs).
+   The move with the most visits is returned.
 
 ```python
 from backend.ai.mcts import mcts_best_action
-action, score, rollouts = mcts_best_action(
-    state, player=1, personality=CRIMSON, rng=rng
-)
+action, mean_value, iterations = mcts_best_action(state, player=1, personality=CRIMSON, rng=rng)
 ```
 
-Budget: 4ms. Minimum 2 rollouts per action.
+Honest scope: one iteration costs ~0.5-1 ms of Python engine simulation, so the
+default 4 ms budget allows only a few iterations. MCTS is therefore **not used
+in gameplay**; HELL uses the cheaper depth-1 simultaneous search described in
+`docs/difficulty.md`. MCTS remains an analysis tool for larger budgets.
 
 ## Ablation Study (`backend/data/ablation.py`)
 
 Turn off one feature at a time and measure the win-rate drop:
 - `baseline` — all features on
-- `no_search` — minimax search disabled
+- `no_search` — in-game search disabled (only has an effect at HELL, the only tier that searches)
 - `no_opponent_model` — prediction disabled
 - `no_learned_policy` — learned model disabled
 

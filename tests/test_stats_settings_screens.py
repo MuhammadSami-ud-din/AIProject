@@ -106,8 +106,8 @@ def test_settings_screen_csv_export_and_reset(mock_surface_clock, monkeypatch, t
 
     settings = {"log_fights": False, "speed": 1.0, "show_ai": True}
 
-    # Queue navigating down to 'export_csv' (index 3: down x 3), Enter, then ESC
-    for _ in range(3):
+    # Queue navigating down to 'export_csv', Enter, then ESC
+    for _ in range(frontend.screens.SETTINGS_KEYS.index("export_csv")):
         pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_DOWN}))
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN}))
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE}))

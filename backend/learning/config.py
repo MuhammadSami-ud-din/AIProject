@@ -14,16 +14,23 @@ from typing import Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 DEFAULT_SEED: int = 42
 DEVICE: str = "cpu"  # PyTorch on CPU for low latency (<1 ms)
-MODELS_DIR: str = os.path.join("models")
-REGISTRY_DB_PATH: str = os.path.join("data", "model_registry.db")
-FIGHT_LOGS_DB_PATH: str = os.path.join("data", "fight_logs.db")
-RESULTS_DIR: str = os.path.join("docs", "results")
+
+# All paths are absolute, anchored at the project root, so the game, the CLIs
+# and the background trainer process agree regardless of the working directory.
+PROJECT_ROOT: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+MODELS_DIR: str = os.path.join(PROJECT_ROOT, "models")
+REGISTRY_DB_PATH: str = os.path.join(PROJECT_ROOT, "data", "model_registry.db")
+# Fight logs written by backend.data.simulate / match logging (backend/data/database.py)
+FIGHT_LOGS_DB_PATH: str = os.path.join(PROJECT_ROOT, "backend", "data", "fights.db")
+RESULTS_DIR: str = os.path.join(PROJECT_ROOT, "docs", "results")
 
 
 # ---------------------------------------------------------------------------
 # Network Architecture
 # ---------------------------------------------------------------------------
-OBS_DIM: int = 30           # Matches len(Observation.features())
+from backend.learning.features import POLICY_OBS_DIM
+
+OBS_DIM: int = POLICY_OBS_DIM  # Matches backend.learning.features.policy_vector (96)
 ACTION_DIM: int = 27        # Matches len(ALL_ACTIONS)
 HIDDEN_DIM: int = 128       # Small networks only (2 hidden layers of 128)
 NUM_HIDDEN_LAYERS: int = 2
@@ -51,10 +58,16 @@ WHIFF_PENALTY: float = 0.3           # Penalty when attacking and missing
 # ---------------------------------------------------------------------------
 # Personality Reward Shaping Bonuses (Phase 2)
 # ---------------------------------------------------------------------------
-# Crimson (Rushdown Berserker)
-CRIMSON_FORWARD_BONUS: float = 0.20
+# Crimson (Rushdown Berserker). Aggression is rewarded only when it achieves
+# something: damage dealt, or forcing the enemy to block while in range.
+# (A flat bonus per FORWARD step was farmable by walking into the wall.)
+CRIMSON_DAMAGE_BONUS: float = 0.50      # extra reward per 1% HP dealt
+CRIMSON_PRESSURE_BONUS: float = 0.40    # enemy forced into blockstun while in range
+CRIMSON_PRESSURE_RANGE: float = 140.0   # pixels: "in range" for pressure
 CRIMSON_COMBO_HIT_BONUS: float = 0.50
 CRIMSON_BACKING_PENALTY: float = -0.25
+# Backwards-compatible name (no longer used as a per-step bonus)
+CRIMSON_FORWARD_BONUS: float = 0.0
 
 # Steel (Counter-Fighter & Tank)
 STEEL_BLOCK_BONUS: float = 0.80
@@ -116,12 +129,22 @@ OPPONENT_RANDOM_EXPLORATION_RATE: float = 0.20
 # Promotion Validation Tournament
 VALIDATION_TOURNAMENT_MATCHES: int = 100
 PROMOTION_WIN_RATE_THRESHOLD: float = 0.55
+QUICK_MODE_VALIDATION_MATCHES: int = 8   # quick mode plays fewer matches, same gate
 
 # Style Check Constraints (Aggression, Defense, Distance)
-STYLE_CRIMSON_MIN_AGGRESSION: float = 0.58
-STYLE_STEEL_MIN_DEFENSE: float = 8.0          # Blocks/parries per minute
-STYLE_SHADOW_MIN_AVG_DIST_MARGIN: float = 20.0 # Shadow dist > Crimson dist
-STYLE_GOLDEN_ENTROPY_MIN: float = 1.5         # Action variety threshold
+# Calibrated by playing the validation tournament (8 rounds vs the league pool)
+# with the FSM experts, a RandomAgent and an always-FORWARD agent:
+#   aggression (share of frames the enemy is in hit/blockstun or knocked down
+#   while Crimson is within CRIMSON_PRESSURE_RANGE -- same notion as the reward):
+#       Crimson FSM 0.35, Random 0.09, always-FORWARD 0.00
+#   Steel successful blocks+parries per minute: Random 0.3-0.9, FSM Steel 0-1.3
+#   Shadow avg distance: FSM 118 px, Random 197 px (so damage is also required)
+STYLE_CRIMSON_MIN_AGGRESSION: float = 0.20
+STYLE_STEEL_MIN_DEFENSE: float = 1.0          # successful blocks/parries per minute
+STYLE_SHADOW_MIN_AVG_DISTANCE: float = 110.0  # px
+STYLE_SHADOW_MIN_AVG_DIST_MARGIN: float = 20.0  # legacy name, unused
+STYLE_MIN_DAMAGE_PER_MINUTE: float = 250.0    # % HP per minute (Random ~125, FSMs 390-530)
+STYLE_GOLDEN_ENTROPY_MIN: float = 1.5         # bits, entropy of chosen (non-idle) actions
 
 
 # ---------------------------------------------------------------------------

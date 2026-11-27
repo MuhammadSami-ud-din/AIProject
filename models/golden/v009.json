@@ -1,0 +1,31 @@
+{
+  "version": 9,
+  "obs_dim": 96,
+  "action_dim": 27,
+  "timestamp": 1795720463.404223,
+  "type": "ppo",
+  "personality": "Golden",
+  "update": 75,
+  "total_steps": 38400,
+  "git_commit": "211e3c1",
+  "seed": 42,
+  "warm_start": "/Users/apple/Abdulrepo/AIProject/models/golden/bc_model.pt",
+  "league_elo": 815.8101307859747,
+  "recent_training_win_rate": 0.24166666666666664,
+  "latest_metrics": {
+    "update": 75,
+    "total_steps": 38400,
+    "mean_reward": -0.1469433456659317,
+    "episodes_finished": 4,
+    "mean_episode_return": -21.35394999999999,
+    "episode_win_rate": 0.0,
+    "policy_loss": -0.0040038948791334406,
+    "value_loss": 42.92776942253113,
+    "entropy": 1.599046729505062,
+    "clipfrac": 0.07080078125,
+    "approx_kl": 0.006312337121926248,
+    "elapsed_time": 310.4003200531006,
+    "league_elo": 815.8101307859747,
+    "curriculum_tier": 3
+  }
+}

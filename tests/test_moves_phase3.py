@@ -63,13 +63,15 @@ def test_guard_meter_and_guard_break():
     state.fighter2.blockstun = 0
     state.fighter2.guard_meter = 5.0
     start_attack(state.fighter1, heavy)
+    events = []
     for _ in range(heavy.startup + 1):
         state = step(state, Action.HEAVY, Action.BLOCK)
+        events.append(state.fighter2.last_hit_effect)
 
-    # GUARD BREAK!
+    # GUARD BREAK! (last_hit_effect is a one-frame event)
     assert state.fighter2.guard_break_stun > 0
     assert state.fighter2.hitstun >= 38
-    assert state.fighter2.last_hit_effect == "guard_break"
+    assert "guard_break" in events
 
 
 def test_fury_mode_bonus_and_super_discount():

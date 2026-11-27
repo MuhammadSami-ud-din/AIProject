@@ -1,7 +1,10 @@
 {
+  "obs_dim": 96,
+  "action_dim": 27,
   "type": "behaviour_cloning",
   "personality": "Crimson",
-  "test_accuracy": 0.598128759189129,
+  "test_accuracy": 0.5771812080536913,
+  "critic_explained_variance": 0.05480170249938965,
   "seed": 42,
-  "git_commit": "c6e324b"
+  "git_commit": "211e3c1"
 }

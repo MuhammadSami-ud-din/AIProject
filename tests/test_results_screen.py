@@ -147,7 +147,7 @@ def test_results_screen_backwards_compatibility(mock_surface_clock):
 
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN}))
     action = results_screen(surface, clock, "p1", "Player", "Shadow", lockout_s=0.0)
-    assert action == "menu"
+    assert action == "rematch"  # Enter = default button = instant rematch
 
 
 def test_results_screen_lockout_ignores_early_input(mock_surface_clock, monkeypatch):
@@ -247,13 +247,31 @@ def test_results_screen_arrow_selection_and_enter(mock_surface_clock):
         "winner_side": 1,
     }
 
-    # Default is Main Menu (index 2). Left arrow -> Character Select (1), Left arrow -> Rematch (0)
-    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT}))
+    # Default is Rematch (index 0, instant rematch). Right -> Character Select (1),
+    # Right -> Main Menu (2), Left -> Character Select (1)
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT}))
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RIGHT}))
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_LEFT}))
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN}))
 
     action = results_screen(surface, clock, stats, lockout_s=0.0)
-    assert action == "rematch"
+    assert action == "character_select"
+
+
+def test_results_screen_enter_is_instant_rematch(mock_surface_clock):
+    surface, clock = mock_surface_clock
+    stats = {"p1_character": "Golden", "p2_character": "Crimson", "p1_kind": "human",
+             "p2_kind": "ai", "winner_side": 2}
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_RETURN}))
+    assert results_screen(surface, clock, stats, lockout_s=0.0) == "rematch"
+
+
+def test_results_screen_local_versus(mock_surface_clock):
+    surface, clock = mock_surface_clock
+    stats = {"p1_character": "Steel", "p2_character": "Shadow", "p1_kind": "human",
+             "p2_kind": "human", "winner_side": 2, "rounds_p1": 1, "rounds_p2": 2}
+    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_ESCAPE}))
+    assert results_screen(surface, clock, stats, lockout_s=0.0) == "menu"
 
 
 def test_results_screen_mirror_match(mock_surface_clock):

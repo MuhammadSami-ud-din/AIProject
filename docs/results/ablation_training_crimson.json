@@ -1,0 +1,116 @@
+{
+  "_protocol": {
+    "personality": "crimson",
+    "seed": 42,
+    "ppo_updates": 12,
+    "n_envs": 4,
+    "steps_per_env": 128,
+    "bc_demo_rounds": 16,
+    "bc_epochs": 10,
+    "eval_matches": 24,
+    "evaluation": "round-robin vs the full league pool (promotion-gate protocol)",
+    "bc_test_accuracy": 0.4918032786885246
+  },
+  "full_reward": {
+    "use_personality_bonus": true,
+    "use_bc_warm_start": true,
+    "win_rate_vs_baseline": 0.7916666666666666,
+    "wins": 19,
+    "matches": 24,
+    "ci_95": [
+      0.5952959003045092,
+      0.9075515957331762
+    ],
+    "style_adherence": {
+      "aggression_ratio": 0.16563419884890823,
+      "defense_per_min": 0.0,
+      "avg_distance": 158.51097127291672,
+      "passed_style_constraint": false
+    },
+    "final_training_history": {
+      "update": 12,
+      "total_steps": 6144,
+      "mean_reward": 1.4226053953170776,
+      "episodes_finished": 12,
+      "mean_episode_return": 79.8703333333333,
+      "episode_win_rate": 0.8333333333333334,
+      "policy_loss": -0.006737553630955517,
+      "value_loss": 303.3265047073364,
+      "entropy": 1.319192249327898,
+      "clipfrac": 0.0322265625,
+      "approx_kl": 0.004042653366923332,
+      "elapsed_time": 37.857004165649414,
+      "league_elo": 1244.0297233252168,
+      "curriculum_tier": 3
+    },
+    "train_seconds": 51.67665991700778
+  },
+  "no_personality_bonus": {
+    "use_personality_bonus": false,
+    "use_bc_warm_start": true,
+    "win_rate_vs_baseline": 0.5833333333333334,
+    "wins": 14,
+    "matches": 24,
+    "ci_95": [
+      0.3883470217722619,
+      0.7553236913813627
+    ],
+    "style_adherence": {
+      "aggression_ratio": 0.18653335416341196,
+      "defense_per_min": 0.0,
+      "avg_distance": 134.39427113323075,
+      "passed_style_constraint": false
+    },
+    "final_training_history": {
+      "update": 12,
+      "total_steps": 6144,
+      "mean_reward": 0.6301308870315552,
+      "episodes_finished": 15,
+      "mean_episode_return": 11.208133333333326,
+      "episode_win_rate": 0.5333333333333333,
+      "policy_loss": -0.010160209523746744,
+      "value_loss": 355.1309642791748,
+      "entropy": 1.5565297827124596,
+      "clipfrac": 0.04931640625,
+      "approx_kl": 0.0036560554581228644,
+      "elapsed_time": 37.39743161201477,
+      "league_elo": 1107.24029486608,
+      "curriculum_tier": 2
+    },
+    "train_seconds": 47.87901283300016
+  },
+  "no_bc": {
+    "use_personality_bonus": true,
+    "use_bc_warm_start": false,
+    "win_rate_vs_baseline": 0.5416666666666666,
+    "wins": 13,
+    "matches": 24,
+    "ci_95": [
+      0.35074899855419933,
+      0.7210863580226128
+    ],
+    "style_adherence": {
+      "aggression_ratio": 0.12189893767928632,
+      "defense_per_min": 1.2483056457459887,
+      "avg_distance": 188.95550141627578,
+      "passed_style_constraint": false
+    },
+    "final_training_history": {
+      "update": 12,
+      "total_steps": 6144,
+      "mean_reward": -0.1332421749830246,
+      "episodes_finished": 1,
+      "mean_episode_return": 40.349999999999845,
+      "episode_win_rate": 1.0,
+      "policy_loss": -0.005035381589550525,
+      "value_loss": 9.300433650612831,
+      "entropy": 2.2480721846222878,
+      "clipfrac": 0.0283203125,
+      "approx_kl": 0.0023988225730136037,
+      "elapsed_time": 15.076613187789917,
+      "league_elo": 1059.1042323436943,
+      "curriculum_tier": 1
+    },
+    "train_seconds": 28.37089004200243
+  }
+}

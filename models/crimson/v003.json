@@ -1,17 +1,17 @@
 {
   "personality": "Crimson",
   "version": 3,
-  "total_steps": 384,
-  "git_commit": "c6e324b",
-  "seed": 42,
-  "timestamp": 1795248641.7379186,
+  "total_steps": 192,
+  "git_commit": "211e3c1",
+  "seed": 101,
+  "timestamp": 1795716268.599651,
   "latest_metrics": {
     "update": 3,
-    "total_steps": 384,
-    "mean_reward": -0.17582029104232788,
-    "policy_loss": -0.016806211322546005,
-    "value_loss": 123.50011444091797,
-    "entropy": 1.399358794093132,
-    "elapsed_time": 0.2776196002960205
+    "total_steps": 192,
+    "mean_reward": -0.12804687023162842,
+    "policy_loss": -0.0005865342682227492,
+    "value_loss": 0.908601239323616,
+    "entropy": 2.212728261947632,
+    "elapsed_time": 0.24224591255187988
   }
 }

@@ -5,7 +5,7 @@ Damage is expressed in HP (out of 100 max health). In the engine, health is 0..1
 so health damage is damage / 100.0.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from backend.ai.actions import Action
@@ -65,11 +65,37 @@ class MoveData:
     projectile_lifetime: int = 0  # Lifetime of projectile in frames
     armor: int = 0                # Hits absorbed without flinching
     is_counter_stance: bool = False # Active counter stance
+    # Vertical hitbox (min, max) in px above the attacker's own height (y).
+    # None = default for the hit level (see vertical_range).
+    hitbox_y: tuple[float, float] | None = None
+    anti_air: bool = False        # Beats air attacks during startup/active
 
     @property
     def health_damage(self) -> float:
         """Damage as a fraction of 1.0 health."""
         return self.damage / 100.0
+
+    @property
+    def vertical_range(self) -> tuple[float, float]:
+        """Vertical extent of the hitbox, relative to the attacker's height."""
+        if self.hitbox_y is not None:
+            return self.hitbox_y
+        if self.hit_level == HitLevel.LOW:
+            return LOW_HITBOX_Y
+        return DEFAULT_HITBOX_Y
+
+
+# Vertical hitbox defaults (px above the attacker's feet).
+# Lows hug the floor, so they whiff on anyone who has left the ground.
+LOW_HITBOX_Y: tuple[float, float] = (0.0, 30.0)
+# Mids / overheads / throws cover the whole standing body and low air.
+DEFAULT_HITBOX_Y: tuple[float, float] = (10.0, 120.0)
+# "High" attacks aim above a crouching body (60 px) and whiff on crouchers.
+HIGH_AIMED_HITBOX_Y: tuple[float, float] = (65.0, 140.0)
+# Anti-airs reach far up.
+ANTI_AIR_HITBOX_Y: tuple[float, float] = (40.0, 220.0)
+# Jump attacks reach down from the attacker's height.
+AIR_ATTACK_HITBOX_Y: tuple[float, float] = (-60.0, 40.0)
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +172,7 @@ UNIVERSAL_MOVES: dict[Action, MoveData] = {
         pushback_hit=32.0,
         pushback_block=36.0,
         wall_bounce=True,
+        hitbox_y=HIGH_AIMED_HITBOX_Y,  # high roundhouse: whiffs on crouchers
         cancel_windows=(CancelType.SPECIAL, CancelType.SUPER),
         meter_gain_hit=12.0,
         meter_gain_block=4.0,
@@ -239,6 +266,7 @@ UNIVERSAL_MOVES: dict[Action, MoveData] = {
         reach=86.0,
         hit_level=HitLevel.HIGH,
         is_air=True,
+        hitbox_y=AIR_ATTACK_HITBOX_Y,
         pushback_hit=18.0,
         pushback_block=22.0,
         meter_gain_hit=5.0,
@@ -257,6 +285,7 @@ UNIVERSAL_MOVES: dict[Action, MoveData] = {
         reach=96.0,
         hit_level=HitLevel.HIGH,
         is_air=True,
+        hitbox_y=AIR_ATTACK_HITBOX_Y,
         pushback_hit=22.0,
         pushback_block=26.0,
         meter_gain_hit=7.0,
@@ -275,6 +304,8 @@ UNIVERSAL_MOVES: dict[Action, MoveData] = {
         reach=92.0,
         hit_level=HitLevel.MID,
         launch=True,
+        anti_air=True,
+        hitbox_y=ANTI_AIR_HITBOX_Y,
         pushback_hit=24.0,
         pushback_block=28.0,
         cancel_windows=(CancelType.SUPER,),
@@ -347,12 +378,14 @@ CRIMSON_SPECIALS: dict[Action, MoveData] = {
         startup=5,
         active=5,
         recovery=24,
-        on_block=-14,
+        on_block=-13,
         hitstun=28,
         blockstun=15,
         reach=95.0,
         hit_level=HitLevel.MID,
         launch=True,
+        anti_air=True,
+        hitbox_y=ANTI_AIR_HITBOX_Y,
         pushback_hit=28.0,
         pushback_block=32.0,
         cancel_windows=(CancelType.SUPER,),
@@ -366,7 +399,7 @@ CRIMSON_SPECIALS: dict[Action, MoveData] = {
         startup=11,
         active=8,
         recovery=18,
-        on_block=-4,
+        on_block=-7,
         hitstun=22,
         blockstun=18,
         reach=108.0,
@@ -403,7 +436,7 @@ CRIMSON_SPECIALS: dict[Action, MoveData] = {
         startup=5,
         active=12,
         recovery=28,
-        on_block=-15,
+        on_block=-19,
         hitstun=45,
         blockstun=20,
         reach=128.0,
@@ -423,7 +456,7 @@ STEEL_SPECIALS: dict[Action, MoveData] = {
         startup=2,
         active=24,
         recovery=18,
-        on_block=0,
+        on_block=-41,
         hitstun=30,
         blockstun=0,
         reach=98.0,
@@ -441,7 +474,7 @@ STEEL_SPECIALS: dict[Action, MoveData] = {
         startup=7,
         active=4,
         recovery=14,
-        on_block=-2,
+        on_block=-1,
         hitstun=22,
         blockstun=16,
         reach=104.0,
@@ -489,7 +522,7 @@ STEEL_SPECIALS: dict[Action, MoveData] = {
         startup=3,
         active=30,
         recovery=25,
-        on_block=0,
+        on_block=-54,
         hitstun=50,
         blockstun=0,
         reach=110.0,
@@ -524,7 +557,7 @@ SHADOW_SPECIALS: dict[Action, MoveData] = {
         startup=6,
         active=7,
         recovery=18,
-        on_block=-5,
+        on_block=-8,
         hitstun=24,
         blockstun=16,
         reach=105.0,
@@ -577,7 +610,7 @@ SHADOW_SPECIALS: dict[Action, MoveData] = {
         startup=4,
         active=10,
         recovery=26,
-        on_block=-12,
+        on_block=-15,
         hitstun=42,
         blockstun=20,
         reach=185.0,
@@ -610,7 +643,7 @@ GOLDEN_SPECIALS: dict[Action, MoveData] = {
         startup=6,
         active=30,
         recovery=20,
-        on_block=0,
+        on_block=-49,
         hitstun=32,
         blockstun=0,
         reach=100.0,
@@ -659,7 +692,7 @@ GOLDEN_SPECIALS: dict[Action, MoveData] = {
         startup=6,
         active=8,
         recovery=26,
-        on_block=-14,
+        on_block=-15,
         hitstun=45,
         blockstun=18,
         reach=120.0,
@@ -710,36 +743,10 @@ def _create_character_moveset(
             moveset[action] = base
             continue
 
-        scaled = MoveData(
-            name=base.name,
-            action=base.action,
+        scaled = replace(
+            base,
             damage=round(base.damage * damage_scale, 2),
-            startup=base.startup,
-            active=base.active,
-            recovery=base.recovery,
-            on_block=base.on_block,
-            hitstun=base.hitstun,
-            blockstun=base.blockstun,
             reach=round(base.reach * reach_scale, 1),
-            hit_level=base.hit_level,
-            knockdown=base.knockdown,
-            launch=base.launch,
-            wall_bounce=base.wall_bounce,
-            ground_bounce=base.ground_bounce,
-            pushback_hit=base.pushback_hit,
-            pushback_block=base.pushback_block,
-            invulnerable_frames=base.invulnerable_frames,
-            cancel_windows=base.cancel_windows,
-            meter_gain_hit=base.meter_gain_hit,
-            meter_gain_block=base.meter_gain_block,
-            meter_cost=base.meter_cost,
-            is_air=base.is_air,
-            is_crouching=base.is_crouching,
-            is_projectile=base.is_projectile,
-            projectile_speed=base.projectile_speed,
-            projectile_lifetime=base.projectile_lifetime,
-            armor=base.armor,
-            is_counter_stance=base.is_counter_stance,
         )
         moveset[action] = scaled
 

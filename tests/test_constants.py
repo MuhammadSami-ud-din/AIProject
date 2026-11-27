@@ -60,56 +60,32 @@ def test_block_reduces_to_ten_percent():
     assert BLOCK_DAMAGE_RATIO == 0.10
 
 
-# --- Light attack data ----------------------------------------------
+# --- Base attack summaries are derived from the real move data ---------
+# (Old literal values 0.05/70/4/3/8 and 0.12/90/... were a second, stale copy
+#  of the frame data; LIGHT_ATTACK / HEAVY_ATTACK now mirror MoveData.)
 
-def test_light_damage():
-    assert LIGHT_ATTACK.damage == 0.05
-
-
-def test_light_reach():
-    assert LIGHT_ATTACK.reach == 70
-
-
-def test_light_startup():
-    assert LIGHT_ATTACK.startup == 4
-
-
-def test_light_active():
-    assert LIGHT_ATTACK.active == 3
+def test_light_attack_matches_jab_move_data():
+    from backend.ai.actions import Action
+    from backend.engine.moves import UNIVERSAL_MOVES
+    jab = UNIVERSAL_MOVES[Action.LIGHT]
+    assert LIGHT_ATTACK.damage == pytest.approx(jab.health_damage)
+    assert LIGHT_ATTACK.reach == jab.reach == 82.0
+    assert LIGHT_ATTACK.startup == jab.startup == 3
+    assert LIGHT_ATTACK.active == jab.active
+    assert LIGHT_ATTACK.recovery == jab.recovery
+    assert LIGHT_ATTACK.cooldown == jab.startup + jab.active + jab.recovery
 
 
-def test_light_recovery():
-    assert LIGHT_ATTACK.recovery == 8
-
-
-def test_light_cooldown():
-    assert LIGHT_ATTACK.cooldown == 12
-
-
-# --- Heavy attack data ----------------------------------------------
-
-def test_heavy_damage():
-    assert HEAVY_ATTACK.damage == 0.12
-
-
-def test_heavy_reach():
-    assert HEAVY_ATTACK.reach == 90
-
-
-def test_heavy_startup():
-    assert HEAVY_ATTACK.startup == 10
-
-
-def test_heavy_active():
-    assert HEAVY_ATTACK.active == 4
-
-
-def test_heavy_recovery():
-    assert HEAVY_ATTACK.recovery == 18
-
-
-def test_heavy_cooldown():
-    assert HEAVY_ATTACK.cooldown == 30
+def test_heavy_attack_matches_heavy_punch_move_data():
+    from backend.ai.actions import Action
+    from backend.engine.moves import UNIVERSAL_MOVES
+    hp = UNIVERSAL_MOVES[Action.HEAVY]
+    assert HEAVY_ATTACK.damage == pytest.approx(hp.health_damage)
+    assert HEAVY_ATTACK.reach == hp.reach
+    assert HEAVY_ATTACK.startup == hp.startup == 10
+    assert HEAVY_ATTACK.active == hp.active
+    assert HEAVY_ATTACK.recovery == hp.recovery
+    assert HEAVY_ATTACK.cooldown == hp.startup + hp.active + hp.recovery
 
 
 # --- Attack data is frozen ------------------------------------------

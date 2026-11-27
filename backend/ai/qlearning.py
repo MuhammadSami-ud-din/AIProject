@@ -561,13 +561,15 @@ class OnlineCombatLearner:
         return adjusted, spam_intensity
 
 
-# Shared per-character live learners so the AI keeps its learned Q-table across rounds and rematches
-_SHARED_COMBAT_LEARNERS: Dict[str, OnlineCombatLearner] = {}
+# Persistent live learners so the AI keeps its learned Q-table across rounds and
+# rematches. Keyed by (character, side): in a mirror match (Crimson vs Crimson)
+# each side learns its own table instead of both sides writing into one.
+_SHARED_COMBAT_LEARNERS: Dict[tuple, OnlineCombatLearner] = {}
 
 
-def get_shared_combat_learner(character_name: str) -> OnlineCombatLearner:
-    """Return the persistent OnlineCombatLearner for a given fighter."""
-    key = (character_name or "Default").strip().title()
+def get_shared_combat_learner(character_name: str, player: int = 0) -> OnlineCombatLearner:
+    """Return the persistent OnlineCombatLearner for a fighter on a given side (1 or 2)."""
+    key = ((character_name or "Default").strip().title(), int(player or 0))
     if key not in _SHARED_COMBAT_LEARNERS:
         _SHARED_COMBAT_LEARNERS[key] = OnlineCombatLearner()
     return _SHARED_COMBAT_LEARNERS[key]

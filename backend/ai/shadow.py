@@ -6,219 +6,100 @@ poking with safe attacks and escaping before the enemy can hit back.
 In panic mode, Shadow runs away and looks for long-range pokes.
 """
 
-from backend.ai.actions import ALL_ACTIONS, Action
-from backend.ai.base_agent import Agent
-from backend.ai.choice import pick
+from backend.ai.actions import Action
+from backend.ai.fsm_base import (
+    DISABLED, HEAVY_FAMILY, LIGHT_FAMILY, FighterTuning, FSMFighter,
+    heavy_variant, light_variant, super_cost,
+)
 from backend.ai.observation import Observation
 from backend.ai.personalities import SHADOW
-from backend.ai.zones import Zone, ZoneTracker
+from backend.ai.zones import Zone
+
+HEAVY_REACH = 115.0         # Shadow's long limbs
+SUPER_REACH = 180.0         # Vanishing Arts teleports in
 
 
-class ShadowAgent(Agent):
+class ShadowAgent(FSMFighter):
     """Fast hit-and-run fighter."""
 
+    TUNING = FighterTuning(
+        anti_air_hit=9.2, anti_air_close=6.8, anti_air_range=70.0,
+        throw_vs_block=8.8, throw_normal=7.6,
+        jump_kick=8.8, jump_punch=8.5, jump_far=1.0, jump_attack_range=98.0,
+        crouch_far=0.3, burst_health=0.40, idle=0.1,
+    )
+
     def __init__(self, player=1, difficulty="LOW", seed=None):
-        super().__init__(
-            name="Shadow",
-            player=player,
-            difficulty=difficulty,
-            personality=SHADOW,
-            seed=seed,
-        )
-        self.zone_tracker = ZoneTracker()
+        super().__init__("Shadow", SHADOW, player=player, difficulty=difficulty, seed=seed)
 
-    def reset(self):
-        super().reset()
-        self.zone_tracker.reset()
-
-    def choose_action(self, obs: Observation):
-        """Score every allowed action, then pick one."""
-        from backend.ai.rumble_ai import evaluate_rumble_macro
-        rumble_act = evaluate_rumble_macro(obs, self.name, self.difficulty, self.rng)
-        if rumble_act is not None:
-            return rumble_act, {rumble_act: 10.0}
-
-        if obs.enable_shield_wall:
-            from backend.ai.shield_ai import evaluate_shield_action
-            shield_act = evaluate_shield_action(obs, self.name, self.difficulty, self.rng)
-            if shield_act is not None:
-                return shield_act, {shield_act: 10.0}
-
-        scores = {}
-        zone = self.zone_tracker.update(obs.distance)
-        p = self.personality
-        panicking = obs.is_panicking(p)
-
-        # --- Score each action ---
-        for action in ALL_ACTIONS:
-            score = 0.0
-
-            if action in (Action.FORWARD, Action.DASH):
-                # Shadow needs to close distance to attack
-                mult = 1.2 if action == Action.DASH else 1.0
-                if zone == Zone.FAR:
-                    score = 9.0 * mult
-                elif zone == Zone.MID:
-                    score = 7.0 * mult
-                elif not obs.i_can_hit:
-                    score = 5.0 * mult
-                else:
-                    score = 1.0
-
-                if obs.enemy_is_stuck and not obs.i_can_hit:
-                    score = 8.0 * mult
-
-            elif action in (Action.BACK, Action.BACKDASH):
-                mult = 1.3 if action == Action.BACKDASH else 1.0
-                if obs.my_recovery > 0:
-                    score = 0.3
-                elif obs.i_am_cornered:
-                    score = 0.2
-                elif zone == Zone.CLOSE and obs.my_cooldown > 0:
-                    score = 4.0 * mult
-                else:
-                    score = 0.8 * mult
-
-            elif action == Action.JUMP:
-                if obs.i_am_cornered:
-                    score = 7.0
-                elif obs.enemy_is_attacking and zone == Zone.CLOSE:
-                    score = 3.0
-                else:
-                    score = 0.5
-
-            elif action in (Action.LIGHT, Action.LIGHT_KICK, Action.CROUCH_JAB, Action.CROUCH_KICK):
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                if obs.is_safe_poke:
-                    base = 10.0
-                elif obs.i_can_hit and obs.enemy_is_stuck:
-                    base = 10.0
-                elif obs.i_can_hit:
-                    base = 9.0
-                elif obs.enemy_is_open and zone == Zone.MID:
-                    base = 4.0
-                else:
-                    base = 0.5
-                if action == Action.LIGHT:
-                    score = base
-                elif action == Action.LIGHT_KICK:
-                    score = base * 0.97
-                elif action == Action.CROUCH_KICK:
-                    score = base * (1.02 if obs.enemy_is_blocking and not obs.enemy_is_crouching else 0.94)
-                else:
-                    score = base * 0.93
-
-            elif action in (Action.HEAVY, Action.HEAVY_KICK, Action.OVERHEAD, Action.LOW_SWEEP):
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                can_hit_heavy = (obs.distance <= 115)
-                if obs.enemy_is_stuck and can_hit_heavy:
-                    base = 9.8
-                elif can_hit_heavy and obs.enemy_is_open:
-                    base = 8.8
-                elif can_hit_heavy:
-                    base = 8.4
-                else:
-                    base = 0.2
-                if action == Action.HEAVY:
-                    score = base
-                elif action == Action.HEAVY_KICK:
-                    score = base * 0.97
-                elif action == Action.LOW_SWEEP:
-                    score = base * (1.03 if obs.enemy_is_blocking and not obs.enemy_is_crouching else 0.94)
-                else:
-                    score = base * (1.03 if obs.enemy_is_crouching else 0.93)
-
-            elif action == Action.ANTI_AIR:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                score = 9.2 if obs.enemy_in_air and obs.i_can_hit else (6.8 if obs.distance <= 70 else 0.2)
-
-            elif action == Action.THROW:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                score = (8.8 if obs.enemy_is_blocking else 7.6) if obs.distance <= 48 else 0.2
-
-            elif action in (Action.BLOCK, Action.BLOCK_LOW):
-                if obs.my_in_air:
-                    score = 0.0
-                elif obs.enemy_can_hit and obs.enemy_is_attacking:
-                    score = 7.0 if action == Action.BLOCK else 6.2
-                else:
-                    score = 0.5 if action == Action.BLOCK else 0.3
-
-            elif action in (Action.JUMP_PUNCH, Action.JUMP_KICK):
-                if not obs.my_in_air or not obs.can_attack:
-                    continue
-                score = (8.8 if action == Action.JUMP_KICK else 8.5) if obs.distance <= 98 else 1.0
-
-            elif action == Action.CROUCH:
-                if obs.my_in_air:
-                    continue
-                score = 1.0 if obs.i_can_hit else 0.3
-
-            # --- Shadow Signature Moves (Phase 4 & 5) ---
-            elif action == Action.BURST:
-                if obs.my_hitstun > 10 and obs.my_meter >= 50.0 and obs.my_health < 0.40:
-                    score = 10.0
-                else:
-                    score = 0.0
-
-            elif action == Action.SPECIAL_NEUTRAL:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Energy Dart: projectile zoner
-                score = 9.5 if zone in (Zone.FAR, Zone.MID) else 6.5
-
-            elif action == Action.SPECIAL_FORWARD:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Shadow Step: close-range cross-up / corner escape
-                if obs.i_am_cornered and obs.distance <= 130:
-                    score = 9.5
-                elif zone == Zone.CLOSE and obs.enemy_is_attacking:
-                    score = 8.8
-                elif obs.distance <= 115:
-                    score = 8.2
-                else:
-                    score = 0.8
-
-            elif action == Action.SPECIAL_DOWN:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Phantom Kick: low string mixup
-                score = 8.9 if obs.distance <= 90 else 0.5
-
-            elif action == Action.SPECIAL_BACK:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Feint Strike: bait and reposition
-                score = 8.2 if zone == Zone.CLOSE else 0.5
-
-            elif action == Action.SUPER:
-                if not obs.can_attack or obs.my_in_air:
-                    continue
-                # Vanishing Arts: teleport combo super
-                super_cost = 60.0 if obs.my_health < 0.25 else 100.0
-                if obs.my_meter >= super_cost and obs.distance <= 180:
-                    score = 10.5 if obs.enemy_is_stuck or obs.enemy_hitstun > 0 else 7.0
-                else:
-                    score = 0.0
-
-            elif action == Action.IDLE:
-                score = 0.1
-
+    def score_special(self, action: Action, obs: Observation, zone):
+        if action in (Action.FORWARD, Action.DASH):
+            mult = 1.2 if action == Action.DASH else 1.0
+            if obs.enemy_is_stuck and not obs.i_can_hit:
+                return 8.0 * mult     # rush in to punish
+            if zone == Zone.FAR:
+                return 9.0 * mult
+            if zone == Zone.MID:
+                return 7.0 * mult
+            return 5.0 * mult if not obs.i_can_hit else 1.0
+        if action in (Action.BACK, Action.BACKDASH):
+            mult = 1.3 if action == Action.BACKDASH else 1.0
+            if obs.my_recovery > 0:
+                return 0.3
+            if obs.i_am_cornered:
+                return 0.2
+            return (4.0 if zone == Zone.CLOSE and obs.my_cooldown > 0 else 0.8) * mult
+        if action == Action.JUMP:
+            if obs.i_am_cornered:
+                return 7.0
+            return 3.0 if obs.enemy_is_attacking and zone == Zone.CLOSE else 0.5
+        if action in LIGHT_FAMILY:
+            if obs.is_safe_poke or (obs.i_can_hit and obs.enemy_is_stuck):
+                base = 10.0
+            elif obs.i_can_hit:
+                base = 9.0
+            elif obs.enemy_is_open and zone == Zone.MID:
+                base = 4.0
             else:
-                score = 0.0
+                base = 0.5
+            return light_variant(base, action, obs)
+        if action in HEAVY_FAMILY:
+            in_reach = obs.distance <= HEAVY_REACH
+            if not in_reach:
+                base = 0.2
+            elif obs.enemy_is_stuck:
+                base = 9.8
+            else:
+                base = 8.8 if obs.enemy_is_open else 8.4
+            return heavy_variant(base, action, obs)
+        if action in (Action.BLOCK, Action.BLOCK_LOW):
+            if obs.my_in_air:
+                return DISABLED
+            if obs.enemy_can_hit and obs.enemy_is_attacking:
+                return 7.0 if action == Action.BLOCK else 6.2
+            return 0.5 if action == Action.BLOCK else 0.3
+        if action == Action.SPECIAL_NEUTRAL:   # Energy Dart: projectile zoner
+            return 9.5 if zone in (Zone.FAR, Zone.MID) else 6.5
+        if action == Action.SPECIAL_FORWARD:   # Shadow Step: cross-up / corner escape
+            if obs.i_am_cornered and obs.distance <= 130:
+                return 9.5
+            if zone == Zone.CLOSE and obs.enemy_is_attacking:
+                return 8.8
+            return 8.2 if obs.distance <= HEAVY_REACH else 0.8
+        if action == Action.SPECIAL_DOWN:      # Phantom Kick: low string mixup
+            return 8.9 if obs.distance <= 90 else 0.5
+        if action == Action.SPECIAL_BACK:      # Feint Strike: bait and reposition
+            return 8.2 if zone == Zone.CLOSE else 0.5
+        if action == Action.SUPER:             # Vanishing Arts
+            if obs.my_meter >= super_cost(obs) and obs.distance <= SUPER_REACH:
+                return 10.5 if obs.enemy_is_stuck or obs.enemy_hitstun > 0 else 7.0
+            return DISABLED
+        return None
 
-            # --- Panic mode: run away! ---
-            if panicking:
-                if action in (Action.BACK, Action.BACKDASH):
-                    score *= 2.0
-                elif action in (Action.FORWARD, Action.DASH):
-                    score *= 0.3
-
-            scores[action] = score
-
-        return self._select_action_with_rl_and_diversity(scores, obs, variety=p.variety)
+    def panic_multiplier(self, action: Action) -> float:
+        # Panic: run away!
+        if action in (Action.BACK, Action.BACKDASH):
+            return 2.0
+        if action in (Action.FORWARD, Action.DASH):
+            return 0.3
+        return 1.0

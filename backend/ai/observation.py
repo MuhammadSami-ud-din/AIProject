@@ -1,5 +1,6 @@
 """What a fighter sees in one frame, from its own point of view."""
 
+import copy
 from dataclasses import dataclass, replace
 
 from backend.ai import zones
@@ -74,7 +75,17 @@ _MIRROR_PAIRS = (
     ("my_shield_wall_hp", "enemy_shield_wall_hp"),
     ("my_shield_energy", "enemy_shield_energy"),
     ("my_shield_cooldown", "enemy_shield_cooldown"),
+    ("my_character", "enemy_character"),
+    ("my_attack_phase", "enemy_attack_phase"),
+    ("my_is_thrown", "enemy_is_thrown"),
+    ("my_throw_tech_frames", "enemy_throw_tech_frames"),
+    ("my_guard_break_stun", "enemy_guard_break_stun"),
+    ("my_burst_used", "enemy_burst_used"),
+    ("my_jump_frame", "enemy_jump_frame"),
 )
+
+# Attack phases reported by the engine (FighterState.attack_phase).
+ATTACK_PHASES = ("none", "startup", "active", "recovery")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -159,6 +170,24 @@ class Observation:
     enemy_shield_energy: float = 100.0
     my_shield_cooldown: float = 0.0         # seconds remaining
     enemy_shield_cooldown: float = 0.0
+
+    # Engine detail used by the learned policy (action mask + attack phase).
+    # Filled by enrich_from_state(); the defaults are safe when it was not called.
+    has_engine_detail: bool = False
+    my_character: str = ""
+    enemy_character: str = ""
+    my_attack_phase: str = "none"           # one of ATTACK_PHASES
+    enemy_attack_phase: str = "none"
+    my_is_thrown: bool = False
+    enemy_is_thrown: bool = False
+    my_throw_tech_frames: int = 0
+    enemy_throw_tech_frames: int = 0
+    my_guard_break_stun: int = 0
+    enemy_guard_break_stun: int = 0
+    my_burst_used: bool = False
+    enemy_burst_used: bool = False
+    my_jump_frame: int = 0
+    enemy_jump_frame: int = 0
 
     # Last frame's moves
     my_last_action: Action = Action.IDLE
@@ -422,6 +451,47 @@ class Observation:
             "my_combo_count": float(self.my_combo_count),
             "enemy_combo_count": float(self.enemy_combo_count),
         }
+
+
+def enrich_from_state(obs, state, player):
+    """Return ``obs`` with the engine-detail fields filled from a FightState.
+
+    The plain adapter only copies what the rule-based fighters need. The learned
+    policy also needs the attack phase and the exact action-mask inputs
+    (thrown / guard-break / burst / jump frame), so learning code calls this.
+    The game adapter can call it too (one line) so play matches training.
+    """
+    me = state.fighter1 if player == 1 else state.fighter2
+    enemy = state.fighter2 if player == 1 else state.fighter1
+
+    def phase(f):
+        p = getattr(f, "attack_phase", "none")
+        return p if p in ATTACK_PHASES else "none"
+
+    values = dict(
+        has_engine_detail=True,
+        my_character=me.character_name,
+        enemy_character=enemy.character_name,
+        my_attack_phase=phase(me),
+        enemy_attack_phase=phase(enemy),
+        my_is_thrown=bool(me.is_thrown),
+        enemy_is_thrown=bool(enemy.is_thrown),
+        my_throw_tech_frames=int(me.throw_tech_frames),
+        enemy_throw_tech_frames=int(enemy.throw_tech_frames),
+        my_guard_break_stun=int(me.guard_break_stun),
+        enemy_guard_break_stun=int(enemy.guard_break_stun),
+        my_burst_used=bool(me.burst_used_this_round),
+        enemy_burst_used=bool(enemy.burst_used_this_round),
+        my_jump_frame=int(me.jump_frame),
+        enemy_jump_frame=int(enemy.jump_frame),
+    )
+    # A private shallow copy, filled in place: dataclasses.replace() would
+    # re-run __init__/__post_init__ for ~120 fields every frame (hot path in
+    # training). The original (validated) observation is left untouched.
+    enriched = copy.copy(obs)
+    for name, value in values.items():
+        object.__setattr__(enriched, name, value)
+    return enriched
 
 
 def example_observation(**changes):

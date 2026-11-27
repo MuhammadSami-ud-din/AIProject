@@ -57,6 +57,7 @@ def test_bc_training_produces_weights_and_confusion_matrix(tmp_path):
         batch_size=32,
         seed=42,
         save_path=model_path,
+        num_matches=4,
     )
 
     assert isinstance(model, ActorCritic)
@@ -69,10 +70,48 @@ def test_bc_training_produces_weights_and_confusion_matrix(tmp_path):
     conf = np.array(metrics["confusion_matrix"])
     assert conf.shape == (ACTION_DIM, ACTION_DIM)
 
-    # Check that saved weights reload cleanly
+    # Check that saved weights reload cleanly (strict) through the safe loader
+    from backend.learning.checkpoints import load_compatible_state_dict
     reloaded = ActorCritic(obs_dim=OBS_DIM, action_dim=ACTION_DIM)
-    reloaded.load_state_dict(torch.load(model_path))
+    reloaded.load_state_dict(load_compatible_state_dict(model_path), strict=True)
     dummy_input = torch.zeros((1, OBS_DIM), dtype=torch.float32)
     with torch.no_grad():
         logits, val = reloaded(dummy_input)
     assert logits.shape == (1, ACTION_DIM)
+
+
+def test_bc_demonstrations_use_macro_step_granularity():
+    """Each demo row is one ArenaEnv.step decision with its mask and discounted return."""
+    from backend.learning.bc import generate_demonstrations
+    rows = generate_demonstrations("Steel", num_matches=1, seed=3)
+    assert len(rows) > 10
+    mid, vec, action, ret, mask, won = rows[0]
+    assert vec.shape == (OBS_DIM,)
+    assert mask.shape == (ACTION_DIM,) and mask[action]
+    # macro-steps: a round of up to 3600 frames gives far fewer decisions than frames
+    assert len(rows) < 3600 / 4
+
+
+def test_bc_initialises_critic_and_does_not_touch_repo(tmp_path):
+    """The critic is fitted (explained variance reported) and nothing is written to docs/results."""
+    before = set(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else set()
+    model_path = str(tmp_path / "bc.pt")
+    _, metrics = train_bc_model("Golden", epochs=2, num_matches=4, save_path=model_path,
+                                results_dir=str(tmp_path / "res"))
+    assert "critic_explained_variance" in metrics
+    assert os.path.exists(tmp_path / "res" / "bc_golden_metrics.json")
+    after = set(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else set()
+    assert before == after
+
+
+def test_policy_vector_one_hot_actions_and_attack_phase():
+    from backend.ai.actions import Action
+    from backend.ai.observation import example_observation
+    from backend.learning.features import POLICY_FEATURE_NAMES, policy_vector
+    obs = example_observation(enemy_last_action=Action.HEAVY, my_last_action=Action.BLOCK)
+    vec = policy_vector(obs)
+    names = list(POLICY_FEATURE_NAMES)
+    assert vec[names.index("enemy_last_action==5")] == 1.0
+    assert vec[names.index("my_last_action==6")] == 1.0
+    assert sum(vec[names.index(f"enemy_last_action=={i}")] for i in range(28)) == 1.0
+    assert sum(vec[names.index(f"enemy_attack_phase=={p}")] for p in ("none", "startup", "active", "recovery")) == 1.0

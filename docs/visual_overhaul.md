@@ -80,3 +80,27 @@ All 6 steps of the Fight Screen Visual Overhaul have been implemented using pure
   - Framed portrait, name, archetype, difficulty badge, color-coded active move pill (green=movement, red=attack, blue=defense, purple=special/super), and latency indicator (`ms / 60 FPS`) with green status dot.
   - Top 4 candidate actions with smooth `0.15s` easing bars, gold border, and selection arrow (`▶`) on the chosen move.
   - White explanation sentence, italic yellow tactical commentary, and a centered `-1.0..+1.0` win-probability bar with top 3 contributing factor chips.
+
+
+## Step 7: Unified Menu Theme (`frontend/fantasy_ui.py`, `frontend/fonts.py`)
+
+The plain "intro blur + grey text" menus and the obsidian/gold campaign screens were merged
+into one theme used everywhere:
+
+* **Backdrop** – art (intro blur for menus, arenas for campaign, victory/defeat art for
+  results) + a cached radial vignette, additive torch glow (`BLEND_RGB_ADD` on an RGB surface,
+  so it brightens instead of painting opaque discs) and drifting embers.
+* **Titles** – condensed display font with a molten-gold vertical gradient (multiplied into
+  the glyph alpha with `BLEND_RGBA_MULT`) and a soft drop shadow; cached per text/size. This
+  replaces the old `BLEND_RGBA_ADD` highlight that turned titles into solid yellow boxes.
+* **Widgets** – obsidian cards with gold focus ring and accent bar, toggles, sliders, choice
+  arrows, key caps, pill buttons, modal confirm dialog; one `run_menu` loop for all list menus.
+* **Fonts** – real TTF faces with cached loading; no more `Font(None)` per frame.
+* **Layouts** derive from `SCREEN_WIDTH/SCREEN_HEIGHT` (campaign map, missions and trophy grids
+  no longer run off the right edge).
+
+| | |
+|---|---|
+| ![Main menu](main_menu_streamlined.png) | ![Quick Fight](quick_fight.png) |
+| ![Character select](character_select.png) | ![Results](results_screen.png) |
+| ![Campaign map](campaign_map.png) | ![Settings](settings_screen.png) |

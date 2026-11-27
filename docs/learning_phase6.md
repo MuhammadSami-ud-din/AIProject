@@ -4,20 +4,24 @@
 In Phase 6, we bridge the offline neural network training pipeline directly into the live game engine and player interface:
 1. **PolicyAgent (`backend/learning/policy_agent.py`)**:
    - An `Agent` subclass running PyTorch actor-critic policy inference entirely on CPU.
-   - Utilizes **masked softmax sampling** (rather than rigid argmax), scaled by the character's personality `variety` temperature. This prevents human players from trapping the AI in repetitive loops.
+   - Masked sampling at temperature 1.0 (the distribution it was trained with) or `greedy=True` argmax; no personality temperature.
+   - Same inputs as training: `policy_vector(obs)` and an action mask built from a FighterState reconstructed from all mask inputs in the Observation (thrown, throw-tech, guard-break stun, burst used, jump frame, attack phase).
+   - Same granularity as training: one network query per macro-step, executed like `ArenaEnv.step`.
+   - Model lookup: explicit path → registry "live" row → newest compatible `models/<char>/vNNN.pt` → `bc_model.pt`. Incompatible (e.g. old 30-feature) checkpoints are skipped with a log message.
    - Strict sub-millisecond execution budget timed cleanly with `with self.stage("policy"):`.
    - **Zero-Failure Fallback Guarantee**: If no trained model checkpoint exists on disk or in the registry, the agent seamlessly delegates to the rule-based FSM/search agent without throwing errors or freezing.
 2. **Updated Difficulty Table & DDA (`backend/ai/difficulty.py`)**:
    - **LOW**: Rule-based FSM, high mistake rate, no model needed.
    - **MEDIUM**: Heuristic search, moderate mistake rate, no model needed.
-   - **HIGH**: Search blended with trained neural policy guidance, zero execution noise.
-   - **HELL**: Deep search + policy guidance + dynamic opponent prediction.
-   - **Dynamic Difficulty Adjustment (DDA)**: Tracks human win/loss streaks across rounds. If a player loses 3 rounds in a row, AI mistake chance increases slightly to prevent frustration. If the player wins 3 in a row, AI mistake chance decreases to sharpen the challenge. Damage, health, and physics are never touched—only decision error rates shift.
+   - **HIGH**: FSM + learned policy blend (weight 0.5), Bayesian opponent model.
+   - **HELL**: FSM + learned policy blend (weight 0.7) + depth-1 simultaneous search (expectimax/minimax, 3 ms budget) + live opponent model.
+   - All tiers: jittered human reaction time and occasional dropped/late inputs (see `docs/difficulty.md`).
+   - **Dynamic Difficulty Adjustment (DDA)**: enabled with `adaptive_difficulty=True`; the game must call `wrapper.on_round_end(result)` after each round (and `on_match_end(result)` after a match). Over the last 5 rounds, if the human wins < 45% the AI's mistake chance rises by 5 points, if > 55% it falls. Damage, health and physics are never touched.
 3. **Model Insights Screen (`frontend/screens.py`)**:
    - Accessible directly from the main menu under **Insights** or keyboard shortcut `I`.
    - Displays loaded model version for all 4 fighters (e.g. `v003 (Elo 1245)` or `Heuristic (no model)`).
    - Live telemetry: decision latency breakdown, top candidate actions with policy confidence percentages, predicted opponent action, and active personality reward bonuses.
-   - Interactive **Background Training Manager**: pressing `T` / clicking "Start Background Training" spawns an isolated `multiprocessing.Process`. It streams live metrics (episodes, Elo, win rate against baseline) back to the screen via a non-blocking queue without ever stalling the Pygame 60 FPS main loop.
+   - Interactive **Background Training Manager**: pressing `T` spawns an isolated (`spawn`-context) `multiprocessing.Process` that runs BC → one PPO `train()` call → the real promotion gate, streaming progress through a non-blocking queue. `stop_training()` stops it cleanly. Checkpoints get new unique versions; the gate result reports the true win rate.
 
 ---
 
@@ -34,4 +38,4 @@ In Phase 6, we bridge the offline neural network training pipeline directly into
    - Press `T` again to safely stop the background training process.
 3. **Fight with Policy Fallback**:
    - Start an AI vs AI or Player vs AI match on HIGH or HELL difficulty.
-   - Even without pre-trained checkpoints, the game launches instantly and the fighters perform their character-specific moves and strategies seamlessly.
+   - With checkpoints in `models/<char>/`, HIGH/HELL load them automatically; without (or if they fail to load), the FSM personality plays.

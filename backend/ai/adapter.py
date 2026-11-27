@@ -6,13 +6,16 @@ an Observation from the point of view of player 1 or player 2.
 """
 
 from backend.ai.actions import Action
-from backend.ai.observation import FRAMES_PER_SECOND, ROUND_SECONDS, Observation
-from backend.engine.characters import (
-    CHARACTER_STATS,
-    light_attack_for,
-)
+from backend.ai.observation import FRAMES_PER_SECOND, ROUND_SECONDS, Observation, enrich_from_state
 from backend.engine.constants import ARENA_WIDTH
+from backend.engine.moves import get_move
 from backend.engine.state import FightState
+
+
+def _jab_reach(character_name: str) -> float:
+    """The character's real Jab reach in pixels (from MoveData, per character)."""
+    move = get_move(character_name, Action.LIGHT)
+    return float(move.reach) if move is not None else 0.0
 
 
 def observation_for(state: FightState, player: int) -> Observation:
@@ -36,12 +39,9 @@ def observation_for(state: FightState, player: int) -> Observation:
         my_wins = state.p2_rounds_won
         enemy_wins = state.p1_rounds_won
 
-    # Look up each fighter's body stats for reach
-    my_stats = CHARACTER_STATS.get(me.character_name, CHARACTER_STATS["Golden"])
-    enemy_stats = CHARACTER_STATS.get(enemy.character_name, CHARACTER_STATS["Golden"])
-
-    my_reach = light_attack_for(my_stats).reach
-    enemy_reach = light_attack_for(enemy_stats).reach
+    # Reach = the real Jab (LIGHT) reach from the engine's move data
+    my_reach = _jab_reach(me.character_name)
+    enemy_reach = _jab_reach(enemy.character_name)
 
     # Convert round timer from frames to seconds
     time_left = state.round_frames_left / FRAMES_PER_SECOND
@@ -100,7 +100,7 @@ def observation_for(state: FightState, player: int) -> Observation:
             elif obj.object_type == "trap":
                 trap_dist = min(trap_dist, d)
 
-    return Observation(
+    obs = Observation(
         my_x=max(0.0, min(float(ARENA_WIDTH), me.x)),
         enemy_x=max(0.0, min(float(ARENA_WIDTH), enemy.x)),
         my_health=max(0.0, min(1.0, me.health)),
@@ -169,3 +169,5 @@ def observation_for(state: FightState, player: int) -> Observation:
         my_rounds_won=my_wins,
         enemy_rounds_won=enemy_wins,
     )
+    # Fill attack phase and action-mask inputs so play matches training.
+    return enrich_from_state(obs, state, player)

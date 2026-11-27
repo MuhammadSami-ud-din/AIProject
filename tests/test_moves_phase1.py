@@ -73,11 +73,12 @@ def test_heavy_punch_frame_advantage_minus_five():
     # Frame 10: active frame 1 connects!
     assert s.fighter2.blockstun == move.blockstun
 
-    # Step through all defender blockstun frames + 1 for recovery completion
-    for _ in range(move.blockstun + 1):
+    # Step through all defender blockstun frames: blockstun N = N full frames after the hit.
+    # (Previously this stepped blockstun + 1 frames, which hid a 2-frame ordering bug.)
+    for _ in range(move.blockstun):
         s = step(s, Action.IDLE, Action.BLOCK)
 
-    # Defender is free (0), attacker still has 5 frames of recovery remaining (-5 advantage!)
+    # Defender is free next frame, attacker still has 5 frames of recovery remaining (-5 advantage!)
     assert s.fighter2.blockstun == 0
     assert s.fighter1.recovery == 5
 

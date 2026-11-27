@@ -1,0 +1,31 @@
+{
+  "version": 10,
+  "obs_dim": 96,
+  "action_dim": 27,
+  "timestamp": 1795720371.2522292,
+  "type": "ppo",
+  "personality": "Steel",
+  "update": 80,
+  "total_steps": 40960,
+  "git_commit": "211e3c1",
+  "seed": 42,
+  "warm_start": "/Users/apple/Abdulrepo/AIProject/models/steel/bc_model.pt",
+  "league_elo": 1458.7979144062724,
+  "recent_training_win_rate": 0.9454365079365079,
+  "latest_metrics": {
+    "update": 80,
+    "total_steps": 40960,
+    "mean_reward": 1.03756844997406,
+    "episodes_finished": 6,
+    "mean_episode_return": 81.0585,
+    "episode_win_rate": 1.0,
+    "policy_loss": -0.0006195985479280353,
+    "value_loss": 41.27546167373657,
+    "entropy": 1.438541915267706,
+    "clipfrac": 0.072265625,
+    "approx_kl": 0.005399881556513719,
+    "elapsed_time": 216.8666398525238,
+    "league_elo": 1458.7979144062724,
+    "curriculum_tier": 3
+  }
+}

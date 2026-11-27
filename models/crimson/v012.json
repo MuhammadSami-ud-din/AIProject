@@ -1,0 +1,31 @@
+{
+  "version": 12,
+  "obs_dim": 96,
+  "action_dim": 27,
+  "timestamp": 1795720443.58899,
+  "type": "ppo",
+  "personality": "Crimson",
+  "update": 80,
+  "total_steps": 40960,
+  "git_commit": "211e3c1",
+  "seed": 42,
+  "warm_start": "/Users/apple/Abdulrepo/AIProject/models/crimson/v008.pt",
+  "league_elo": 1041.0111507825475,
+  "recent_training_win_rate": 0.48904761904761906,
+  "latest_metrics": {
+    "update": 80,
+    "total_steps": 40960,
+    "mean_reward": 0.20871874690055847,
+    "episodes_finished": 3,
+    "mean_episode_return": 54.48366666666661,
+    "episode_win_rate": 0.6666666666666666,
+    "policy_loss": -0.012914034887216985,
+    "value_loss": 64.03485298156738,
+    "entropy": 2.1667581163346767,
+    "clipfrac": 0.0380859375,
+    "approx_kl": 0.0032519158121431246,
+    "elapsed_time": 290.53298711776733,
+    "league_elo": 1041.0111507825475,
+    "curriculum_tier": 3
+  }
+}

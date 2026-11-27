@@ -1,7 +1,10 @@
 {
+  "obs_dim": 96,
+  "action_dim": 27,
   "type": "behaviour_cloning",
   "personality": "Steel",
-  "test_accuracy": 0.5111111111111111,
+  "test_accuracy": 0.46601941747572817,
+  "critic_explained_variance": -0.2286592721939087,
   "seed": 42,
-  "git_commit": "c6e324b"
+  "git_commit": "211e3c1"
 }

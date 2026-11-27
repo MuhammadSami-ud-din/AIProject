@@ -41,6 +41,30 @@ turns the `Observation` into scores for each allowed move.
   Starts neutral, then specialises against each opponent.
   Uses `ZoneTracker` to avoid flickering between decisions.
 
+## Engine mechanics the fighters can use
+
+These are engine rules (see `docs/engine.md` and `docs/manual.md`), listed here
+so AI behaviour and docs stay consistent:
+
+- **Crimson**: Rising Uppercut (`SPECIAL_NEUTRAL`) is an anti-air: it beats jump
+  attacks. Berserker Charge (`SPECIAL_BACK`) has 1 hit of armor.
+- **Steel**: Iron Wall (`SPECIAL_DOWN`) / Fortress Crush (`SUPER`) are counter
+  stances; Reflector (`SPECIAL_BACK`) turns projectiles around.
+- **Shadow**: Shadow Step (`SPECIAL_FORWARD`) works on the ground only. In the
+  air, `JUMP` is a double jump and `DASH` / `BACKDASH` is a real horizontal air
+  dash (10 px/frame for 8 frames, once per jump). Energy Dart
+  (`SPECIAL_NEUTRAL`) can be jumped over.
+- **Golden**: Tactician Stance (`SPECIAL_DOWN`) cycles Rush (+8% damage) →
+  Guard (half chip, 40% less guard drain) → Evade (+10% walk speed, longer
+  invulnerability on evasive moves). Golden Read (`SPECIAL_NEUTRAL`) succeeds
+  when the enemy repeats the predicted attack within 30 frames; Golden's next
+  clean hit within 60 frames is then a counter-hit with +25% damage. The
+  success shows as the one-frame event `last_hit_effect == "read"` /
+  `read_success == True`.
+- Everyone: blocking is impossible during your own move, a fresh block press
+  parries for 4 frames but a failed parry locks parrying out for 24 frames,
+  and `last_hit_effect` (`"hit"`, `"block"`, `"parry"`, ...) is a one-frame event.
+
 ## Testing
 
 Each fighter must beat `RandomAgent` in at least 80% of 50 headless matches.

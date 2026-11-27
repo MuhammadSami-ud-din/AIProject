@@ -2,8 +2,8 @@
 
 ## File: `backend/ai/opponent_model.py`
 
-Predicts what the enemy will do next, so HELL-mode fighters
-can use expectimax instead of worst-case minimax.
+Predicts what the enemy will do next. HIGH/HELL use it to boost counters, and
+HELL's in-game search uses its distribution for expectimax.
 
 ## How it works
 
@@ -27,9 +27,15 @@ can use expectimax instead of worst-case minimax.
 
 ## Usage in HELL mode
 
-When `is_confident` is True, the search switches from minimax
-(assume the worst) to expectimax (weight enemy moves by predicted
-probabilities). This gives a more realistic and stronger opponent.
+`DifficultyWrapper._run_search` (HELL only, within 220 px, 3 ms budget) runs a
+depth-1 simultaneous-move search. Once the model has made at least 30
+predictions with at least 35% accuracy (`EXPECTIMAX_MIN_PREDICTIONS`,
+`EXPECTIMAX_MIN_ACCURACY` in `difficulty.py`) it uses **expectimax**: each
+candidate's value is the probability-weighted evaluation over the model's top-3
+predicted enemy moves. Before that it uses **minimax** (worst case) over the
+threat set IDLE / LIGHT / BLOCK. `wrapper.last_search["mode"]` shows which was
+used. (The 70% `is_confident` flag is still reported, but 70% is rarely reached
+against humans, so the switch uses the lower threshold.)
 
 ## Key properties
 

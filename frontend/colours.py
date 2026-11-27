@@ -1,10 +1,11 @@
-"""Colours and sizes used by every screen in the game."""
+"""Legacy colour constants (kept for older modules such as the replay viewer).
 
-# ---------------------------------------------------------------
-# Screen
-# ---------------------------------------------------------------
-SCREEN_WIDTH = 1024
-SCREEN_HEIGHT = 600
+Screen size lives in frontend.theme (single source of truth) and is
+re-exported here so `from frontend.colours import SCREEN_WIDTH` keeps working.
+New code should import from frontend.theme / frontend.fantasy_ui instead.
+"""
+
+from frontend.theme import SCREEN_HEIGHT, SCREEN_WIDTH  # noqa: F401  (re-export)
 
 # ---------------------------------------------------------------
 # Colours (R, G, B)

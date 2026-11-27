@@ -36,42 +36,42 @@ def test_binomial_test_greater():
     assert p_mid > 0.5
 
 
-def test_run_training_ablation_saves_json():
-    """Training ablation study runs and outputs structured results to data/ablation_results.json."""
-    results = run_training_ablation(personality="Crimson", episodes=2)
+def test_run_training_ablation_really_trains(tmp_path):
+    """The ablation trains every configuration (tiny budget) and reports measured numbers only."""
+    results = run_training_ablation(
+        personality="Crimson", updates=1, n_envs=1, steps_per_env=16,
+        bc_matches=3, bc_epochs=1, eval_matches=3,
+        work_dir=str(tmp_path / "work"), results_dir=str(tmp_path / "res"),
+    )
+    for key in ("full_reward", "no_personality_bonus", "no_bc"):
+        entry = results[key]
+        assert entry["matches"] == 3
+        assert entry["win_rate_vs_baseline"] == entry["wins"] / 3
+        assert 0.0 <= entry["style_adherence"]["aggression_ratio"] <= 1.0
+        assert entry["final_training_history"]["update"] == 1
+    assert results["no_bc"]["use_bc_warm_start"] is False
+    assert os.path.exists(tmp_path / "res" / "ablation_training_crimson.json")
+    # each configuration trained its own checkpoint in the work dir, not in models/
+    assert os.path.exists(tmp_path / "work" / "no_bc" / "crimson" / "v001.pt")
 
-    assert "full_reward" in results
-    assert "no_personality_bonus" in results
-    assert "no_bc" in results
 
-    # Full reward retains rushdown style
-    assert results["full_reward"]["style_adherence"]["passed_style_constraint"] is True
-    # Without rushdown bonus, style constraint fails
-    assert results["no_personality_bonus"]["style_adherence"]["passed_style_constraint"] is False
-
-    assert os.path.exists("data/ablation_results.json")
+def test_eval_module_has_no_hardcoded_metrics():
+    import inspect
+    import backend.learning.eval as ev
+    src = inspect.getsource(ev)
+    for fabricated in ("0.72", "0.58", "0.46", "Synthetic"):
+        assert fabricated not in src
 
 
-def test_difficulty_separation_monotonicity():
-    """Difficulty tiers progress monotonically from LOW to HELL."""
-    results = verify_difficulty_separation(personality="Steel", num_matches=4)
-
-    assert "LOW" in results
-    assert "MEDIUM" in results
-    assert "HIGH" in results
-    assert "HELL" in results
+def test_difficulty_separation_monotonicity(tmp_path):
+    results = verify_difficulty_separation(personality="Steel", num_matches=2, results_dir=str(tmp_path))
     for diff in ["LOW", "MEDIUM", "HIGH", "HELL"]:
-        assert "win_rate" in results[diff]
-        assert "ci_95" in results[diff]
         low, high = results[diff]["ci_95"]
         assert 0.0 <= low <= high <= 1.0
+    assert os.path.exists(tmp_path / "difficulty_separation.json")
 
 
-def test_compare_difficulty_tiers():
-    """Adjacent difficulty tiers comparison produces win rates and p-values."""
-    comparison = compare_difficulty_tiers(personality="Steel", num_matches=4)
-    assert "MEDIUM_vs_LOW" in comparison
-    assert "HIGH_vs_MEDIUM" in comparison
-    assert "HELL_vs_HIGH" in comparison
-
-    assert os.path.exists("data/difficulty_eval.json")
+def test_compare_difficulty_tiers(tmp_path):
+    comparison = compare_difficulty_tiers(personality="Steel", num_matches=2, results_dir=str(tmp_path))
+    assert {"MEDIUM_vs_LOW", "HIGH_vs_MEDIUM", "HELL_vs_HIGH"} <= set(comparison)
+    assert os.path.exists(tmp_path / "difficulty_tiers.json")

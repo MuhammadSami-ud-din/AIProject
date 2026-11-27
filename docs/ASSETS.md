@@ -56,8 +56,21 @@ A 25% dark overlay is automatically composited over arenas during combat to keep
 
 ---
 
-## 4. Audio (CC0 Sound Fallback)
+## 4. Audio (procedural)
 
-Optional sound effects (hit, block, KO, round intro) may be placed in `frontend/assets/sounds/`.
-If no sound files are present, audio playback is safely bypassed with zero runtime overhead or warnings.
-Audio mute is configurable in Settings.
+There are no audio files. `frontend/audio.py` synthesises every effect and both music loops
+with numpy at start-up (layered impacts, noise-sweep whooshes, block/parry/KO sounds, UI
+chimes). `audio.export_wavs(dir)` writes them out as `.wav` files for auditioning.
+Volume / mute are configurable in Settings and persisted in `data/settings.json`.
+
+---
+
+## 5. Fonts (`frontend/assets/fonts/`)
+
+| File | Source | License |
+|---|---|---|
+| `DejaVuSans.ttf`, `DejaVuSans-Bold.ttf` | DejaVu fonts 2.x (copied from matplotlib's bundled fonts) | Bitstream Vera / DejaVu license (free, redistributable) – see `LICENSE_DEJAVU.txt` |
+
+`frontend/fonts.py` first tries system faces (Avenir Next Condensed, DIN Condensed,
+Bahnschrift, Impact for titles; Avenir Next / Segoe UI / Helvetica Neue / Arial for text)
+and falls back to these bundled files, then to pygame's built-in font.

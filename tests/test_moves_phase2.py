@@ -52,13 +52,15 @@ def test_counter_hit_bonus():
     jab = get_move("Crimson", Action.LIGHT)
     start_attack(state.fighter1, jab)
 
-    # Step until jab hits
+    # Step until jab hits (last_hit_effect is a one-frame event: collect it)
+    events = []
     for _ in range(4):
         state = step(state, Action.LIGHT, Action.HEAVY)
+        events.append(state.fighter1.last_hit_effect)
 
     # Defender should be counter-hit!
     assert state.fighter1.is_counter_hit is True
-    assert state.fighter1.last_hit_effect == "counter"
+    assert "counter" in events
     # Jab hitstun is 12, so counter-hitstun = int(12 * 1.5) = 18; ticks down 1 on frame 4 to 17
     assert state.fighter2.hitstun >= 17
     # Defender's attack was interrupted
@@ -98,12 +100,14 @@ def test_wall_bounce():
     start_attack(state.fighter1, hk)
 
     # Advance until active
+    events = []
     for _ in range(hk.startup + 1):
         state = step(state, Action.HEAVY_KICK, Action.IDLE)
+        events.append(state.fighter1.last_hit_effect)
 
-    # Attacker recorded wall bounce
+    # Attacker recorded wall bounce (one-frame event)
     assert state.fighter1.wall_bounced is True
-    assert state.fighter1.last_hit_effect == "wall_bounce"
+    assert "wall_bounce" in events
     # Defender bounced into air
     assert state.fighter2.in_air is True
 
@@ -119,11 +123,13 @@ def test_ground_bounce():
 
     start_attack(state.fighter1, slam)
     # Advance through startup (7f) and throw execution window (7f)
+    events = []
     for _ in range(slam.startup + 8):
         state = step(state, Action.SPECIAL_DOWN, Action.IDLE)
+        events.append(state.fighter1.last_hit_effect)
 
     assert state.fighter1.ground_bounced is True
-    assert state.fighter1.last_hit_effect == "ground_bounce"
+    assert "ground_bounce" in events
     assert state.fighter2.in_air is True
 
 

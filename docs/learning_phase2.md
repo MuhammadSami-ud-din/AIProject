@@ -11,14 +11,21 @@ Phase 2 shapes distinct fighting styles purely through the reinforcement learnin
 - **Time Stalling Penalty**: $-0.005$ per frame to discourage passive stalling.
 - **Whiff Penalty**: $-0.30$ when an attack completes without contacting or being blocked by the opponent.
 
+### Anti-reward-hacking rules
+- The engine reports `last_hit_effect` ("block", "hit", "parry", "counter", "read", ...) and `read_success` as **one-frame events**. `ArenaEnv.step` passes every simulated frame of a macro-step to `RewardCalculator.observe_frame`, and event bonuses are **edge-triggered** (paid only on the frame the event appears), so a one-frame event is never missed and a sticky value is never paid twice. (Before: Steel earned +2.5 on every step after its first parry, Golden +3 every step after a read.)
+- Golden's read uses the engine's `"read"` effect (legacy `"golden_read"` still accepted).
+- Crimson is no longer paid per FORWARD step (that was farmable by walking into a wall); its aggression bonus pays for results, and the promotion style gate measures the same thing.
+- `RewardCalculator(personality, use_personality_bonus=False)` keeps only the shared terms (used by the ablation).
+
 ### 2. Personality-Shaped Incentives
 - **Crimson Brawler (Rushdown)**:
-  - Advancing Pressure: $+0.20$ for moving forward or dashing.
+  - Damage aggression: $+0.50$ per 1% HP dealt (on top of the shared damage term).
+  - Pressure: $+0.40$ each time the enemy is forced into blockstun while Crimson is within 140 px.
   - Retreat Penalty: $-0.25$ for walking backward or backdashing.
   - Combo Strings: $+0.50 \times \text{combo\_count}$ for chaining consecutive hits.
 - **Steel Guardian (Counter-Fighter)**:
-  - Clean Blocks: $+0.80$ on absorbing attacks in high/low block.
-  - Perfect Parry: $+2.50$ on successfully parrying within the 4-frame window.
+  - Clean Blocks: $+0.80$ per block event (engine "block" effect or blockstun starting).
+  - Perfect Parry: $+2.50$ per parry event.
   - Block Punish: $+1.50 \times \text{damage}$ for landing counter-hits within 30 frames of blocking.
   - Wild Whiff Penalty: $-0.60$ for reckless swinging.
 - **Shadow Striker (Agile Hit-and-Run)**:
@@ -28,7 +35,7 @@ Phase 2 shapes distinct fighting styles purely through the reinforcement learnin
   - Cornered Penalty: $-0.50$ when trapped within 75px of the corner wall.
 - **Golden Tactician (Adaptive Master)**:
   - Tactical Victory: $+3.0$ bonus on round wins.
-  - Golden Read Counters: $+3.0$ on landing a counter through the read stance.
+  - Golden Read Counters: $+3.0$ per "read" event (or `read_success` turning true).
   - Clean Trades: $+0.20$ bonus on landing unreturned clean hits.
 
 ## Verification

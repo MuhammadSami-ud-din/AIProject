@@ -45,21 +45,31 @@ def test_crimson_reach_multiplier():
 
 
 def test_crimson_light_damage():
-    """Crimson's light does 0.05 * 1.2 = 0.06."""
+    """Crimson's light does Jab damage * 1.2 (0.02 * 1.2 = 0.024)."""
     attack = light_attack_for(CRIMSON_STATS)
-    assert attack.damage == pytest.approx(0.06)
+    assert attack.damage == pytest.approx(LIGHT_ATTACK.damage * 1.2)
 
 
 def test_crimson_light_reach():
-    """Crimson's light reaches 70 * 0.9 = 63 px."""
+    """Crimson's light reaches 82 * 0.9 = 73.8 px."""
     attack = light_attack_for(CRIMSON_STATS)
-    assert attack.reach == pytest.approx(63)
+    assert attack.reach == pytest.approx(73.8)
 
 
 def test_crimson_heavy_damage():
-    """Crimson's heavy does 0.12 * 1.2 = 0.144."""
+    """Crimson's heavy does Heavy Punch damage * 1.2 (0.08 * 1.2 = 0.096)."""
     attack = heavy_attack_for(CRIMSON_STATS)
-    assert attack.damage == pytest.approx(0.144)
+    assert attack.damage == pytest.approx(HEAVY_ATTACK.damage * 1.2)
+
+
+def test_light_attack_for_matches_real_move_data():
+    """The helper agrees with the per-character MoveData the engine really uses."""
+    from backend.ai.actions import Action
+    from backend.engine.moves import get_move
+    for name, stats in CHARACTER_STATS.items():
+        move = get_move(name, Action.LIGHT)
+        assert light_attack_for(stats).reach == pytest.approx(move.reach)
+        assert light_attack_for(stats).damage == pytest.approx(move.health_damage, abs=1e-4)
 
 
 # --- Steel: halved block damage -------------------------------------
@@ -88,15 +98,15 @@ def test_shadow_walk_speed():
 
 
 def test_shadow_reach():
-    """Shadow's light reaches 70 * 1.15 = 80.5 px."""
+    """Shadow's light reaches 82 * 1.15 = 94.3 px."""
     attack = light_attack_for(SHADOW_STATS)
-    assert attack.reach == pytest.approx(80.5)
+    assert attack.reach == pytest.approx(94.3)
 
 
 def test_shadow_damage():
-    """Shadow's light does 0.05 * 0.85 = 0.0425."""
+    """Shadow's light does Jab damage * 0.85 (0.02 * 0.85 = 0.017)."""
     attack = light_attack_for(SHADOW_STATS)
-    assert attack.damage == pytest.approx(0.0425)
+    assert attack.damage == pytest.approx(LIGHT_ATTACK.damage * 0.85)
 
 
 # --- Golden: perfectly average ---------------------------------------

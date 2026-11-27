@@ -216,3 +216,113 @@ def _available_actions(obs):
 def _other(player):
     """Return the other player number."""
     return 2 if player == 1 else 1
+
+
+# ======================================================================
+# Simultaneous-move search used in-game by DifficultyWrapper (HELL)
+# ======================================================================
+# Fighting-game moves are simultaneous, so instead of the sequential minimax
+# above (my ply, then the enemy's ply with me idle) the in-game search
+# simulates BOTH fighters' actions in the same ply:
+#   * "expectimax": value(a) = sum_e P(e) * eval(sim(a, e)), with P from the
+#     OpponentModel -- used once the model predicts the opponent well enough.
+#   * "minimax":    value(a) = min_e eval(sim(a, e)) over a small threat set
+#     -- the cautious default while the opponent model has little data.
+# A hard time budget is enforced: the search stops as soon as the deadline
+# passes and returns the best fully-evaluated candidate.
+
+IN_GAME_BUDGET_S = 0.003          # 3 ms per search call
+MINIMAX_THREATS = (Action.IDLE, Action.LIGHT, Action.BLOCK)
+_SUSTAINED = (Action.FORWARD, Action.BACK, Action.DASH, Action.CROUCH,
+              Action.BLOCK, Action.BLOCK_LOW)
+
+
+def _infer_character(reach):
+    """Guess a character from its light-attack reach (observations carry no name)."""
+    from backend.engine.characters import CHARACTER_STATS, light_attack_for
+
+    best, best_diff = "Golden", float("inf")
+    for name, stats in CHARACTER_STATS.items():
+        diff = abs(light_attack_for(stats).reach - reach)
+        if diff < best_diff:
+            best, best_diff = name, diff
+    return best
+
+
+def state_from_observation(obs, my_character, enemy_character=None):
+    """Rebuild an approximate FightState (me = fighter 1) from an Observation.
+
+    The game hands agents an Observation, not the engine state, so the in-game
+    search runs on this belief state. Positions, health, stun/recovery timers,
+    meters, air/crouch/knockdown and (when available) attack phases are exact;
+    internal engine details that are not observed (e.g. which frame of a move
+    the enemy is on) are approximated by the engine defaults.
+    """
+    from backend.engine.step import make_initial_state
+
+    enemy_character = enemy_character or getattr(obs, "enemy_character", "") or _infer_character(obs.enemy_reach)
+    my_character = getattr(obs, "my_character", "") or my_character
+    st = make_initial_state(my_character, enemy_character)
+    for f, side in ((st.fighter1, "my"), (st.fighter2, "enemy")):
+        f.x = float(getattr(obs, f"{side}_x"))
+        f.health = float(getattr(obs, f"{side}_health"))
+        f.cooldown = int(getattr(obs, f"{side}_cooldown"))
+        f.recovery = int(getattr(obs, f"{side}_recovery"))
+        f.hitstun = int(getattr(obs, f"{side}_hitstun"))
+        f.blockstun = int(getattr(obs, f"{side}_blockstun"))
+        f.in_air = bool(getattr(obs, f"{side}_in_air"))
+        f.is_crouching = bool(getattr(obs, f"{side}_is_crouching"))
+        f.is_knocked_down = bool(getattr(obs, f"{side}_is_knocked_down"))
+        f.meter = float(getattr(obs, f"{side}_meter"))
+        f.guard_meter = float(getattr(obs, f"{side}_guard_meter"))
+        f.combo_hits = int(getattr(obs, f"{side}_combo_count"))
+        f.last_action = getattr(obs, f"{side}_last_action")
+        if getattr(obs, "has_engine_detail", False):
+            f.attack_phase = getattr(obs, f"{side}_attack_phase")
+            f.jump_frame = int(getattr(obs, f"{side}_jump_frame"))
+            f.is_thrown = bool(getattr(obs, f"{side}_is_thrown"))
+            f.guard_break_stun = int(getattr(obs, f"{side}_guard_break_stun"))
+    st.round_frames_left = max(1, int(obs.time_left * 60))
+    return st
+
+
+def _simulate_joint(state, player, my_action, enemy_action, frames=FRAMES_PER_PLY):
+    current = state.copy()
+    for i in range(frames):
+        if current.round_over or current.match_over:
+            break
+        mine = my_action if (i == 0 or my_action in _SUSTAINED) else Action.IDLE
+        theirs = enemy_action if (i == 0 or enemy_action in _SUSTAINED) else Action.IDLE
+        current = step(current, mine, theirs) if player == 1 else step(current, theirs, mine)
+    return current
+
+
+def simultaneous_search(state, player, personality, candidates, enemy_probs=None,
+                        mode="minimax", top_enemy=3, budget_s=IN_GAME_BUDGET_S):
+    """Depth-1 simultaneous-move search over ``candidates`` with a hard budget.
+
+    Returns (best_action, best_value, candidates_evaluated, elapsed_s).
+    """
+    start = time.perf_counter()
+    deadline = start + budget_s
+    if mode == "expectimax" and enemy_probs:
+        ranked = sorted(enemy_probs.items(), key=lambda kv: kv[1], reverse=True)[:top_enemy]
+        total = sum(p for _, p in ranked) or 1.0
+        enemy_set = [(a, p / total) for a, p in ranked]
+    else:
+        mode = "minimax"
+        enemy_set = [(a, 1.0) for a in MINIMAX_THREATS]
+
+    best_action, best_value, evaluated = None, float("-inf"), 0
+    for my_action in candidates:
+        values = []
+        for enemy_action, p in enemy_set:
+            if time.perf_counter() >= deadline and best_action is not None:
+                return best_action, best_value, evaluated, time.perf_counter() - start
+            nxt = _simulate_joint(state, player, my_action, enemy_action)
+            values.append((p, _evaluate_state(nxt, player, personality)))
+        value = sum(p * v for p, v in values) if mode == "expectimax" else min(v for _, v in values)
+        evaluated += 1
+        if value > best_value:
+            best_action, best_value = my_action, value
+    return best_action or Action.IDLE, best_value, evaluated, time.perf_counter() - start

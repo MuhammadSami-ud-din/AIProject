@@ -184,7 +184,7 @@ def stub_menus(monkeypatch, *, match_type="me_vs_ai", p1="Crimson", p2="Steel",
         calls.match_type += 1
         return match_type
 
-    def character_select(_s, _c, is_p2=False):
+    def character_select(_s, _c, is_p2=False, **_kwargs):
         calls.characters.append(is_p2)
         return p2 if is_p2 else p1
 
@@ -246,11 +246,58 @@ MATCH_LABELS = {
 # 1. Menus open
 # ----------------------------------------------------------------------
 
-def test_main_menu_opens_and_esc_returns_intro(monkeypatch, screen, clock):
-    frames = install_flip_hook(monkeypatch, {20: [key_event(pygame.K_ESCAPE)]})
+def test_main_menu_esc_asks_before_quitting(monkeypatch, screen, clock):
+    """Esc opens a quit confirmation; cancelling keeps the menu, confirming quits."""
+    frames = install_flip_hook(monkeypatch, {
+        20: [key_event(pygame.K_ESCAPE)],      # open the dialog
+        25: [key_event(pygame.K_ESCAPE)],      # cancel -> back to the menu
+        30: [key_event(pygame.K_ESCAPE)],      # open again
+        35: [key_event(pygame.K_y)],           # confirm
+    })
     result = screens.main_menu(screen, clock)
-    assert result == "intro"
-    assert frames["frames"] >= 20  # it really drew frames
+    assert result == "quit"
+    assert frames["frames"] >= 35  # it really drew frames (menu kept running after cancel)
+
+
+def test_quick_fight_screen_returns_a_full_setup(monkeypatch, screen, clock):
+    install_flip_hook(monkeypatch, {
+        5: [key_event(pygame.K_RIGHT)],        # focus starts on FIGHT; right does nothing harmful
+        8: [key_event(pygame.K_RETURN)],
+    })
+    choice = screens.quick_fight_screen(screen, clock)
+    assert choice is not None
+    assert choice.mode in ("me_vs_ai", "local_versus", "ai_vs_ai")
+    assert choice.p1_char and choice.p2_char and choice.difficulty in ("LOW", "MEDIUM", "HIGH", "HELL")
+
+
+def test_quick_fight_flow_plays_a_match(monkeypatch, screen, clock, player_id):
+    calls = stub_menus(monkeypatch)
+    install_probe(monkeypatch, fight_screen, force_ko=True)
+    choice = screens.QuickFightChoice("me_vs_ai", "Crimson", "Steel", "LOW", "arena_iron_foundry")
+    answers = iter([choice, None])
+    monkeypatch.setattr(game_main, "quick_fight_screen", lambda s, c, initial=None: next(answers))
+    game_main._quick_fight_flow(screen, clock, make_settings(), player_id)
+    assert len(calls.results) == 1
+    assert calls.results[0]["arena"] == "arena_iron_foundry"
+    assert calls.match_type == 0 and calls.characters == []   # no extra menus
+
+
+def test_local_versus_passes_both_and_falls_back(monkeypatch, screen, clock, player_id):
+    """Local versus asks run_fight for two humans; a rejection falls back to P1 vs AI."""
+    stub_menus(monkeypatch, match_type="local_versus")
+    seen = []
+
+    def fake_run_fight(surface, clock_, a1, a2, human_player=None, **kwargs):
+        seen.append(human_player)
+        if human_player == "both":
+            raise ValueError("human_player='both' not supported")
+        return "quit"
+
+    monkeypatch.setattr(game_main, "run_fight", fake_run_fight)
+    monkeypatch.setattr(game_main, "_local_versus_supported", lambda: True)
+    result, setup = game_main._start_match(screen, clock, make_settings(), player_id=player_id)
+    assert seen == ["both", 1]
+    assert result == "menu" and setup.match_type == "local_versus"
 
 
 def test_main_menu_enter_picks_an_entry(monkeypatch, screen, clock):
@@ -284,7 +331,7 @@ def test_each_match_type_plays_300_frames(monkeypatch, screen, clock, player_id,
     )
     assert probe.steps >= FRAMES
     assert result == "menu"          # we "quit" the match after 300 frames
-    assert setup["match_type"] == match_type
+    assert setup.match_type == match_type
 
 
 def test_tutorial_plays_300_frames(monkeypatch, screen, clock):

@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from backend.ai.actions import Action
-from backend.engine.constants import ARENA_WIDTH, ROUND_FRAMES
+from backend.engine.constants import (
+    ARENA_WIDTH,
+    FURY_HEALTH_THRESHOLD,
+    JUMP_DURATION,
+    JUMP_HEIGHT,
+    PROJECTILE_HEIGHT,
+    ROUND_FRAMES,
+)
 from backend.engine.rules import ModeRules
 from backend.engine.rumble_state import (
     ArenaObjectState,
@@ -35,19 +42,12 @@ class ProjectileState:
     hit_level: str = "mid"       # "mid", "high", "low"
     reach: float = 24.0
     reflected: bool = False
+    height: float = PROJECTILE_HEIGHT  # centre height above the floor (jump over it)
 
     def copy(self):
-        return ProjectileState(
-            x=self.x,
-            y=self.y,
-            vx=self.vx,
-            owner=self.owner,
-            lifetime=self.lifetime,
-            damage=self.damage,
-            hit_level=self.hit_level,
-            reach=self.reach,
-            reflected=self.reflected,
-        )
+        new = object.__new__(ProjectileState)
+        new.__dict__.update(self.__dict__)
+        return new
 
 
 # ---------------------------------------------------------------
@@ -90,6 +90,15 @@ class FighterState:
     is_thrown: bool = False       # currently being grabbed in a throw
     throw_damage_pending: float = 0.0
     armor_hits: int = 0           # armor points (absorbs hits without flinching)
+    throw_invuln_frames: int = 0  # cannot be thrown (wakeup, just left hit/blockstun)
+    pending_throw_bounce: bool = False  # the throw that grabbed us ground-bounces on landing
+
+    # Dashes (forward dash, backdash, Shadow air dash)
+    dash_frames_left: int = 0     # frames of dash travel remaining
+    dash_total_frames: int = 0    # length of the current dash
+    dash_dir: int = 0             # +1 = right, -1 = left
+    dash_speed: float = 0.0       # first-frame speed of the current dash (px/frame)
+    dash_in_air: bool = False     # True for Shadow's air dash (constant speed, hover)
 
     # Combos & Juggles (Phase 2)
     combo_hits: int = 0           # hits landed in current combo
@@ -99,14 +108,19 @@ class FighterState:
     ground_bounced: bool = False  # ground bounce used in current combo
     cancel_available: bool = False# True during hit-cancel window
     is_counter_hit: bool = False  # True if last landed hit was a counter-hit
-    last_hit_effect: str = "none" # "none", "counter", "parry", "guard_break", "burst"
+    # ONE-FRAME event (reset to "none" at the start of every step()):
+    # "none", "hit", "block", "counter", "parry", "guard_break", "burst",
+    # "tech", "ground_bounce", "wall_bounce", "read". See docs/engine.md.
+    last_hit_effect: str = "none"
 
     # Meters & Defense (Phase 3)
     meter: float = 0.0            # Super meter: 0.0 to 100.0
     guard_meter: float = 100.0    # Guard meter: 0.0 to 100.0 (breaks at 0)
     guard_break_stun: int = 0     # Guard break stun timer
     block_held_frames: int = 0    # How many frames block has been held (for 4f parry)
-    is_parrying: bool = False     # Parry active
+    is_parrying: bool = False     # Parry active (reserved; not set by the engine)
+    parry_armed: bool = False     # This block press can still parry (fresh press, no lockout)
+    parry_lockout: int = 0        # Frames during which a fresh block press cannot parry
     burst_used_this_round: bool = False # Burst limited to once per round
 
     # Character Stance & Special States (Phase 4)
@@ -114,7 +128,8 @@ class FighterState:
     counter_stance: bool = False  # Steel Iron Wall / Fortress Crush counter active
     read_action: Action = Action.IDLE # Golden predicted action
     read_frames_left: int = 0     # Frames remaining for Golden read prediction
-    read_success: bool = False    # Golden prediction landed successfully
+    read_success: bool = False    # ONE-FRAME event: Golden prediction landed this frame
+    read_bonus_frames: int = 0    # After a successful read: next clean hit is boosted
 
     # What this fighter did last frame
     last_action: Action = Action.IDLE
@@ -166,12 +181,24 @@ class FighterState:
     @property
     def is_fury(self) -> bool:
         """Fury mode activates when health is below 25%."""
-        return self.health < 0.25
+        return self.health < FURY_HEALTH_THRESHOLD
+
+    @property
+    def y(self) -> float:
+        """Height above the floor in pixels (parabolic jump arc; 0 on the ground)."""
+        if not self.in_air:
+            return 0.0
+        p = min(max(self.jump_frame / float(JUMP_DURATION), 0.0), 1.0)
+        return JUMP_HEIGHT * 4.0 * p * (1.0 - p)
 
     @property
     def is_dashing(self) -> bool:
-        """True when the fighter's current/last action is a forward or back dash."""
-        return self.last_action in (Action.DASH, Action.BACKDASH) or self.current_action in (Action.DASH, Action.BACKDASH)
+        """True while dashing (forward dash, backdash or air dash)."""
+        return (
+            self.dash_frames_left > 0
+            or self.last_action in (Action.DASH, Action.BACKDASH)
+            or self.current_action in (Action.DASH, Action.BACKDASH)
+        )
 
     @property
     def busy(self) -> bool:
@@ -192,81 +219,16 @@ class FighterState:
         )
 
     def copy(self):
-        """A fresh copy that can be changed without touching the original."""
-        return FighterState(
-            x=self.x,
-            health=self.health,
-            cooldown=self.cooldown,
-            recovery=self.recovery,
-            hitstun=self.hitstun,
-            blockstun=self.blockstun,
-            attack_phase=self.attack_phase,
-            attack_frames_left=self.attack_frames_left,
-            attack_type=self.attack_type,
-            current_action=self.current_action,
-            has_hit=self.has_hit,
-            is_crouching=self.is_crouching,
-            in_air=self.in_air,
-            jump_frame=self.jump_frame,
-            air_jumps_left=self.air_jumps_left,
-            air_dash_left=self.air_dash_left,
-            is_knocked_down=self.is_knocked_down,
-            knockdown_frames=self.knockdown_frames,
-            invulnerable_frames=self.invulnerable_frames,
-            throw_tech_frames=self.throw_tech_frames,
-            is_thrown=self.is_thrown,
-            throw_damage_pending=self.throw_damage_pending,
-            armor_hits=self.armor_hits,
-            combo_hits=self.combo_hits,
-            combo_damage=self.combo_damage,
-            juggle_count=self.juggle_count,
-            wall_bounced=self.wall_bounced,
-            ground_bounced=self.ground_bounced,
-            cancel_available=self.cancel_available,
-            is_counter_hit=self.is_counter_hit,
-            last_hit_effect=self.last_hit_effect,
-            meter=self.meter,
-            guard_meter=self.guard_meter,
-            guard_break_stun=self.guard_break_stun,
-            block_held_frames=self.block_held_frames,
-            is_parrying=self.is_parrying,
-            burst_used_this_round=self.burst_used_this_round,
-            stance=self.stance,
-            counter_stance=self.counter_stance,
-            read_action=self.read_action,
-            read_frames_left=self.read_frames_left,
-            read_success=self.read_success,
-            last_action=self.last_action,
-            character_name=self.character_name,
-            build_charges=self.build_charges,
-            build_recharge_timer=self.build_recharge_timer,
-            building_frames=self.building_frames,
-            shield=self.shield,
-            speed_boost_timer=self.speed_boost_timer,
-            power_boost_timer=self.power_boost_timer,
-            walls_built=self.walls_built,
-            walls_broken=self.walls_broken,
-            items_collected=self.items_collected,
-            zone_damage_taken=self.zone_damage_taken,
-            shield_wall=self.shield_wall.copy() if self.shield_wall is not None else None,
-            shield_energy=self.shield_energy,
-            shield_cooldown_frames=self.shield_cooldown_frames,
-            shield_startup_frames=self.shield_startup_frames,
-            shield_startup_side=self.shield_startup_side,
-            shield_break_stun=self.shield_break_stun,
-            shield_walls_raised=self.shield_walls_raised,
-            shield_walls_broken=self.shield_walls_broken,
-            shield_time_behind_frames=self.shield_time_behind_frames,
-            projectile_cooldown=self.projectile_cooldown,
-            shots_fired=self.shots_fired,
-            level=self.level,
-            health_mult=self.health_mult,
-            damage_mult=self.damage_mult,
-            speed_mult=self.speed_mult,
-            block_mult=self.block_mult,
-            regen_enabled=self.regen_enabled,
-            no_hit_timer=self.no_hit_timer,
-        )
+        """A fresh copy that can be changed without touching the original.
+
+        Copies every dataclass field generically (so new fields can never be
+        forgotten); the only mutable field, shield_wall, is copied deeply.
+        """
+        new = object.__new__(FighterState)
+        new.__dict__.update(self.__dict__)
+        if self.shield_wall is not None:
+            new.shield_wall = self.shield_wall.copy()
+        return new
 
 
 # ---------------------------------------------------------------
@@ -296,6 +258,10 @@ class FightState:
     # Polish & VFX signals (Phase 6)
     super_freeze_frames: int = 0   # Super flash freeze counter (15f)
     super_attacker: int = 0        # 1 or 2 (which player initiated super)
+    # Last non-idle input pressed during a super freeze; applied on the first
+    # frame after the freeze (unless a new input is pressed on that frame).
+    buffered_action1: Action = Action.IDLE
+    buffered_action2: Action = Action.IDLE
 
     # Arena Rumble Game Mode State (Phase 1-6)
     rules: ModeRules = field(default_factory=ModeRules.classic)
@@ -326,6 +292,8 @@ class FightState:
             match_result=self.match_result,
             super_freeze_frames=self.super_freeze_frames,
             super_attacker=self.super_attacker,
+            buffered_action1=self.buffered_action1,
+            buffered_action2=self.buffered_action2,
             rules=self.rules.copy(),
             zone=self.zone.copy() if self.zone is not None else None,
             walls=[w.copy() for w in self.walls],

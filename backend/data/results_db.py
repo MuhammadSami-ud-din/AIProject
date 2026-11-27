@@ -2,7 +2,7 @@
 
 Stores match results separately from frame-by-frame training logs:
 - data/results.db: holds who won, match scores, round outcomes, human/AI records.
-- data/fight_logs.db: holds per-frame logs for ML training.
+- backend/data/fights.db (backend/data/database.py): per-frame logs for ML training.
 
 All writes to results.db happen in ONE atomic transaction per match.
 Parameterised SQL is strictly enforced.
@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS missions (
 """
 
 
+# Whitelisted per-character level updates (no f-string SQL identifiers).
+_LEVEL_UPDATE_SQL = {
+    "crimson": "UPDATE progress SET crimson_level = ? WHERE player_id = ?",
+    "steel": "UPDATE progress SET steel_level = ? WHERE player_id = ?",
+    "shadow": "UPDATE progress SET shadow_level = ? WHERE player_id = ?",
+    "golden": "UPDATE progress SET golden_level = ? WHERE player_id = ?",
+}
+
+
 class ResultsDB:
     """Manages the SQLite database for player profiles, match results, and stats."""
 
@@ -126,6 +135,9 @@ class ResultsDB:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
+        if self.db_path != ":memory:":
+            # WAL lets the game read stats while a background writer saves a match.
+            conn.execute("PRAGMA journal_mode=WAL;")
         return conn
 
     @contextmanager
@@ -654,10 +666,14 @@ class ResultsDB:
     def set_character_level(self, player_id: int, character_name: str, level: int) -> None:
         """Set character level for a player."""
         self.get_or_create_progress(player_id)
-        col = f"{character_name.lower()}_level"
+        # Column names cannot be bound as SQL parameters, so map the character
+        # to a fixed, whitelisted statement instead of formatting user text into SQL.
+        sql = _LEVEL_UPDATE_SQL.get(character_name.strip().lower())
+        if sql is None:
+            raise ValueError(f"unknown character {character_name!r}")
         with self.connection() as conn:
             with conn:
-                conn.execute(f"UPDATE progress SET {col} = ? WHERE player_id = ?", (level, player_id))
+                conn.execute(sql, (level, player_id))
 
     def get_campaign_progress(self, player_id: int) -> Dict[str, Any]:
         """Get campaign state: unlocked battle, completed battles list, stars dict."""

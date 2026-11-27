@@ -48,22 +48,26 @@ def test_ppo_trainer_checkpointing_and_metadata(tmp_path):
         n_envs=2,
         steps_per_env=16,
         seed=42,
+        models_dir=str(tmp_path),
     )
-    checkpoint_path = trainer.save_checkpoint(update_num=1)
+    first = trainer.save_checkpoint(update_num=1)
+    second = trainer.save_checkpoint(update_num=1)   # same update number -> new version, no overwrite
 
-    assert os.path.exists(checkpoint_path)
-    json_path = checkpoint_path.replace(".pt", ".json")
-    assert os.path.exists(json_path)
+    assert os.path.exists(first) and os.path.exists(second)
+    assert first != second
+    assert first.startswith(str(tmp_path)) and second.endswith("v002.pt")
+    assert os.path.exists(first.replace(".pt", ".json"))
 
 
-def test_ppo_quick_run_against_idle_opponent():
-    """PPO trains for 3 updates against an idle opponent and improves reward."""
+def test_ppo_quick_run_against_idle_opponent(tmp_path):
+    """PPO trains for 3 updates against an idle opponent in ONE train() call."""
     trainer = PPOTrainer(
         personality="Crimson",
         opponent_agent=AlwaysIdleAgent(player=2),
         n_envs=2,
         steps_per_env=32,
         seed=101,
+        models_dir=str(tmp_path),
     )
     res = trainer.train(total_updates=3, quick_mode=True)
 
@@ -75,3 +79,26 @@ def test_ppo_quick_run_against_idle_opponent():
     assert "policy_loss" in first_update
     assert "value_loss" in first_update
     assert "entropy" in first_update
+    assert res["latest_checkpoint"].startswith(str(tmp_path))
+
+
+def test_ppo_samples_league_opponents_and_updates_elo(tmp_path):
+    """Default PPO training samples opponents from the league and records results."""
+    trainer = PPOTrainer(personality="Steel", n_envs=2, steps_per_env=48, seed=5, models_dir=str(tmp_path))
+    assert trainer.league is not None
+    res = trainer.train(total_updates=2)
+    played = sum(o.matches_played for o in trainer.league.opponents.values())
+    finished = sum(h["episodes_finished"] for h in res["history"])
+    assert played == finished
+    assert "league_elo" in res["history"][-1]
+
+
+def test_incompatible_checkpoint_is_skipped(tmp_path):
+    """An old 30-feature checkpoint is ignored instead of crashing or half-loading."""
+    from backend.learning.checkpoints import find_latest_checkpoint, load_compatible_state_dict
+    d = tmp_path / "crimson"
+    d.mkdir()
+    old = ActorCritic(obs_dim=30, action_dim=ACTION_DIM)
+    torch.save(old.state_dict(), d / "v009.pt")
+    assert load_compatible_state_dict(str(d / "v009.pt")) is None
+    assert find_latest_checkpoint("Crimson", str(tmp_path)) is None

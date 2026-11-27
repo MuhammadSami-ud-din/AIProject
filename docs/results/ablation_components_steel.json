@@ -1,0 +1,72 @@
+{
+  "difficulty": "HELL",
+  "opponent": "Golden FSM MEDIUM",
+  "full": {
+    "wins": 10,
+    "total": 10,
+    "win_rate": 1.0,
+    "ci_95": [
+      0.7224680153904798,
+      1.0
+    ],
+    "losses": 0,
+    "draws": 0,
+    "policy_loaded": true,
+    "search_calls": 2811,
+    "seconds": 11.6751327499951,
+    "use_search": true,
+    "use_opponent_model": true,
+    "use_learned_policy": true
+  },
+  "no_policy": {
+    "wins": 10,
+    "total": 10,
+    "win_rate": 1.0,
+    "ci_95": [
+      0.7224680153904798,
+      1.0
+    ],
+    "losses": 0,
+    "draws": 0,
+    "policy_loaded": false,
+    "search_calls": 3413,
+    "seconds": 12.424180625006557,
+    "use_search": true,
+    "use_opponent_model": true,
+    "use_learned_policy": false
+  },
+  "no_opponent_model": {
+    "wins": 10,
+    "total": 10,
+    "win_rate": 1.0,
+    "ci_95": [
+      0.7224680153904798,
+      1.0
+    ],
+    "losses": 0,
+    "draws": 0,
+    "policy_loaded": true,
+    "search_calls": 3571,
+    "seconds": 14.115508458999102,
+    "use_search": true,
+    "use_opponent_model": false,
+    "use_learned_policy": true
+  },
+  "no_search": {
+    "wins": 10,
+    "total": 10,
+    "win_rate": 1.0,
+    "ci_95": [
+      0.7224680153904798,
+      1.0
+    ],
+    "losses": 0,
+    "draws": 0,
+    "policy_loaded": true,
+    "search_calls": 0,
+    "seconds": 5.365129874990089,
+    "use_search": false,
+    "use_opponent_model": true,
+    "use_learned_policy": true
+  }
+}
